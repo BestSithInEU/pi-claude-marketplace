@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -15,6 +15,7 @@ import {
   rollbackSkillsReplacement,
 } from "../../../extensions/pi-claude-marketplace/bridges/skills/stage.ts";
 import { locationsFor } from "../../../extensions/pi-claude-marketplace/persistence/locations.ts";
+import { parseFrontmatter } from "../../../extensions/pi-claude-marketplace/platform/pi-api.ts";
 import { cleanupStaging } from "../../../extensions/pi-claude-marketplace/shared/fs-utils.ts";
 
 import type { DiscoveredSkill } from "../../../extensions/pi-claude-marketplace/bridges/skills/types.ts";
@@ -212,6 +213,54 @@ test("SK-4 substituted SKILL.md contains the resolved pluginRoot path verbatim",
     );
     assert.ok(knowledge.includes(pluginRoot), "substituted body should contain pluginRoot path");
     assert.ok(knowledge.includes(pluginDataDir), "substituted body should contain pluginData path");
+  });
+});
+
+test("SK-4 / AG-8: a ${CLAUDE_PLUGIN_ROOT} in a body-synthesized description survives a backslash (Windows) plugin root (substitute-then-escape)", async () => {
+  await withTmpScope(async ({ locations }) => {
+    const srcRoot = await mkdtemp(path.join(os.tmpdir(), "skills-winpath-src-"));
+    try {
+      // No `description` -> the augment arm fills it from the first body paragraph,
+      // which references ${CLAUDE_PLUGIN_ROOT}, and re-emits it as a double-quoted
+      // scalar. If substitution happened AFTER escaping, a Windows path's backslashes
+      // would splice in raw and form an invalid `\U...` escape that the PARSE-02
+      // gate-2 backstop rejects -- hard-failing the whole prepare.
+      const skillsDir = path.join(srcRoot, "skills");
+      await mkdir(path.join(skillsDir, "winpath"), { recursive: true });
+      await writeFile(
+        path.join(skillsDir, "winpath", "SKILL.md"),
+        "---\nname: winpath\n---\nUses ${CLAUDE_PLUGIN_ROOT} at runtime.\n",
+      );
+
+      // A Windows-style plugin root (only used for substitution; the real source
+      // tree lives at srcRoot). Backslashes are the escape hazard under test.
+      const winPluginRoot = "C:\\Users\\me\\acme-plugin";
+
+      const prepared = await prepareStageSkills({
+        locations,
+        marketplaceName: "mp",
+        pluginName: "acme",
+        pluginRoot: winPluginRoot,
+        pluginDataDir: "D:\\pi-data\\mp\\acme",
+        resolved: makeResolved("acme", srcRoot, skillsDir),
+      });
+
+      // Gate-2 did NOT throw: the value re-emitted with escaped backslashes.
+      assert.equal(prepared.kind, "staged");
+      assert.equal(prepared.result.degraded.length, 0);
+
+      await commitPreparedSkills(prepared);
+      const staged = await readFile(
+        path.join(locations.skillsTargetDir, "acme-winpath", "SKILL.md"),
+        "utf8",
+      );
+
+      assert.ok(!staged.includes("${CLAUDE_PLUGIN_ROOT}"), "the var must be substituted");
+      const { frontmatter } = parseFrontmatter(staged);
+      assert.equal(frontmatter.description, "Uses C:\\Users\\me\\acme-plugin at runtime.");
+    } finally {
+      await rm(srcRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -619,5 +668,315 @@ test("TR-06 replacePreparedSkills tolerates owned orphan dir from prior partial 
       null,
       "orphan leftover.txt must be gone (helper rm -r the whole owned orphan dir)",
     );
+  });
+});
+
+test("SKILL-01 / PARSE-01 unparseable source frontmatter -> synthesized disable-model-invocation block, body verbatim, degrade record", async () => {
+  await withTmpScope(async ({ locations }) => {
+    const pluginRoot = path.join(FIXTURES, "unparseable-skill-plugin");
+    const skillsDir = path.join(pluginRoot, "skills");
+    const resolved = makeResolved("acme", pluginRoot, skillsDir);
+
+    const prepared = await prepareStageSkills({
+      locations,
+      marketplaceName: "mp",
+      pluginName: "acme",
+      pluginRoot,
+      pluginDataDir: path.join(locations.dataRoot, "mp", "acme"),
+      resolved,
+    });
+    assert.equal(prepared.kind, "staged");
+
+    // Degrade record: exactly one, carrying the generated name + a non-empty
+    // parse error (the actionable detail the install warning surfaces).
+    assert.equal(prepared.result.degraded.length, 1);
+    const record = prepared.result.degraded[0]!;
+    assert.ok(record.generatedName.length > 0);
+    assert.ok(record.parseError.length > 0, "parse error must be non-empty");
+
+    await commitPreparedSkills(prepared);
+
+    const staged = await readFile(
+      path.join(locations.skillsTargetDir, record.generatedName, "SKILL.md"),
+      "utf8",
+    );
+    // Synthesized frontmatter: generated name, disable-model-invocation, and the
+    // fixed placeholder description.
+    assert.match(staged, new RegExp(`^name: ${record.generatedName}$`, "m"));
+    assert.match(staged, /^disable-model-invocation: true$/m);
+    assert.match(staged, /^description: /m);
+    // Body preserved verbatim (the malformed frontmatter is discarded, not the body).
+    assert.ok(staged.includes("# Bad Skill\n\nThis body must survive verbatim."));
+    // Gate-2 parity: the staged bytes re-parse (do NOT throw) -- Pi accepts them.
+    assert.doesNotThrow(() => parseFrontmatter(staged));
+  });
+});
+
+test("NREG-01 valid skill is staged byte-for-byte identical to a name-rewrite + var-substitution of the source (gates mutate nothing)", async () => {
+  await withTmpScope(async ({ locations }) => {
+    const pluginRoot = path.join(FIXTURES, "test-plugin");
+    const skillsDir = path.join(pluginRoot, "skills");
+    const resolved = makeResolved("acme", pluginRoot, skillsDir);
+
+    const pluginDataDir = path.join(locations.dataRoot, "mp", "acme");
+    const prepared = await prepareStageSkills({
+      locations,
+      marketplaceName: "mp",
+      pluginName: "acme",
+      pluginRoot,
+      pluginDataDir,
+      resolved,
+    });
+    // The all-valid path degrades nothing.
+    assert.equal(prepared.result.degraded.length, 0);
+
+    await commitPreparedSkills(prepared);
+
+    // The `helper` source has `name: helper` (rewritten to `acme-helper`) and a
+    // `${CLAUDE_PLUGIN_DATA}` body reference. Build the expected bytes with
+    // INDEPENDENT literal string replacements -- NOT the production rewrite /
+    // substitute helpers -- so the assertion proves the read-only gates
+    // introduced no reformatting, re-quoting, or field reordering.
+    const source = await readFile(path.join(skillsDir, "helper", "SKILL.md"), "utf8");
+    const expected = source
+      .replace("name: helper", "name: acme-helper")
+      .replaceAll("${CLAUDE_PLUGIN_ROOT}", pluginRoot)
+      .replaceAll("${CLAUDE_PLUGIN_DATA}", pluginDataDir);
+
+    const staged = await readFile(
+      path.join(locations.skillsTargetDir, "acme-helper", "SKILL.md"),
+      "utf8",
+    );
+    // Byte-for-byte: the only differences from source are the name rewrite and
+    // the two variable substitutions.
+    assert.equal(staged, expected);
+  });
+});
+
+// SKILL-02 / WTU-01 / WTU-02 augment arm (gate-1 RETURN branch) ------------
+
+/**
+ * Stage a single dynamically-authored source skill and return the staged
+ * SKILL.md bytes. The source `name` is `s`, so the generated name is `acme-s`.
+ */
+async function stageAugmentSource(
+  locations: ReturnType<typeof locationsFor>,
+  dataRoot: string,
+  sourceSkillMd: string,
+): Promise<string> {
+  const srcRoot = await mkdtemp(path.join(os.tmpdir(), "augment-src-"));
+  try {
+    const skillsDir = path.join(srcRoot, "skills");
+    await mkdir(path.join(skillsDir, "s"), { recursive: true });
+    await writeFile(path.join(skillsDir, "s", "SKILL.md"), sourceSkillMd);
+
+    const resolved = makeResolved("acme", srcRoot, skillsDir);
+    const prepared = await prepareStageSkills({
+      locations,
+      marketplaceName: "mp",
+      pluginName: "acme",
+      pluginRoot: srcRoot,
+      pluginDataDir: dataRoot,
+      resolved,
+    });
+    await commitPreparedSkills(prepared);
+
+    return await readFile(path.join(locations.skillsTargetDir, "acme-s", "SKILL.md"), "utf8");
+  } finally {
+    await cleanupStaging(srcRoot, "test-cleanup");
+  }
+}
+
+test("SKILL-02 description-less skill stages a first-body-paragraph description and stays model-invocable", async () => {
+  await withTmpScope(async ({ locations }) => {
+    const source =
+      "---\nname: no-desc\nversion: 1.0.0\n---\n\n" +
+      "# A Heading\n\n" +
+      "The first genuine prose paragraph.\nSecond line of that paragraph.\n\n" +
+      "A later paragraph that must not be captured.\n";
+
+    const staged = await stageAugmentSource(
+      locations,
+      path.join(locations.dataRoot, "mp", "acme"),
+      source,
+    );
+
+    const { frontmatter } = parseFrontmatter<{
+      name: string;
+      description: string;
+      "disable-model-invocation"?: boolean;
+    }>(staged);
+    assert.equal(frontmatter.name, "acme-s");
+    // The first-body paragraph spans two source lines; the safe single-line
+    // double-quoted scalar emitter collapses its internal newline to a space.
+    assert.equal(
+      frontmatter.description,
+      "The first genuine prose paragraph. Second line of that paragraph.",
+    );
+    // SKILL-02: filled skills stay model-invocable (no disable flag inserted).
+    assert.equal(frontmatter["disable-model-invocation"], undefined);
+    assert.ok(!staged.includes("disable-model-invocation"));
+    // The later paragraph is not part of the description.
+    assert.ok(!(frontmatter.description ?? "").includes("later paragraph"));
+  });
+});
+
+test("SKILL-02 empty probe: a description-less skill with no prose body still stages a non-empty description", async () => {
+  await withTmpScope(async ({ locations }) => {
+    // Frontmatter parses cleanly; there is no description and no prose body.
+    const source = "---\nname: empty-body\n---\n";
+
+    const staged = await stageAugmentSource(
+      locations,
+      path.join(locations.dataRoot, "mp", "acme"),
+      source,
+    );
+
+    const { frontmatter } = parseFrontmatter<{ description: string }>(staged);
+    assert.ok(
+      typeof frontmatter.description === "string" && frontmatter.description.trim().length > 0,
+      "empty-body skill must still carry a non-empty description (Pi drops empty-desc skills)",
+    );
+    assert.doesNotThrow(() => parseFrontmatter(staged));
+  });
+});
+
+test("WTU-01 / WTU-02 when_to_use is folded into the description and hard-cut at 1,536", async () => {
+  await withTmpScope(async ({ locations }) => {
+    // Source combined length = 1000 + 1 (\n) + 536 = 1537 -> hard cut to 1536.
+    const description = "a".repeat(1000);
+    const whenToUse = "b".repeat(536);
+    const source = `---\nname: wtu\ndescription: ${description}\nwhen_to_use: ${whenToUse}\n---\n\nBody.\n`;
+
+    const staged = await stageAugmentSource(
+      locations,
+      path.join(locations.dataRoot, "mp", "acme"),
+      source,
+    );
+
+    const { frontmatter } = parseFrontmatter<{ description: string }>(staged);
+    // Hard cut to exactly 1,536 UTF-16 code units (no ellipsis).
+    assert.equal(frontmatter.description.length, 1536);
+    // The description carries the source description and the folded when_to_use
+    // tail (the single `\n` fold separator collapses to a space in the emitted
+    // double-quoted scalar).
+    assert.ok(frontmatter.description.startsWith("a".repeat(1000)));
+    assert.ok(frontmatter.description.includes("b"), "folded when_to_use tail present");
+    assert.ok(frontmatter.description.endsWith("b"), "tail is the when_to_use text");
+  });
+});
+
+test("WTU-02 / D-86-05 a >1024 combined description still parses to a non-empty description (Pi loads it)", async () => {
+  await withTmpScope(async ({ locations }) => {
+    // Combined length = 1000 + 1 + 200 = 1201 (in the 1025..1536 range): no cut.
+    const description = "a".repeat(1000);
+    const whenToUse = "b".repeat(200);
+    const source = `---\nname: long\ndescription: ${description}\nwhen_to_use: ${whenToUse}\n---\n\nBody.\n`;
+
+    const staged = await stageAugmentSource(
+      locations,
+      path.join(locations.dataRoot, "mp", "acme"),
+      source,
+    );
+
+    // The staged bytes re-parse (do NOT throw) to a non-empty, >1024 description
+    // -- NOT secretly truncated to Pi's 1,024 warning threshold (D-86-05).
+    let parsed: { frontmatter: { description?: unknown } } | undefined;
+    assert.doesNotThrow(() => {
+      parsed = parseFrontmatter(staged);
+    });
+    const description2 = parsed?.frontmatter.description;
+    assert.ok(typeof description2 === "string" && description2.length > 1024);
+  });
+});
+
+test("SKILL-03 / WTU-01 a `>-` block-scalar description is replaced as a full node span, siblings byte-identical", async () => {
+  await withTmpScope(async ({ locations }) => {
+    const source =
+      "---\n" +
+      "name: block\n" +
+      "description: >-\n" +
+      "  A folded block scalar description\n" +
+      "  spanning several source lines.\n" +
+      "version: 2.3.1\n" +
+      "tags: alpha, beta\n" +
+      "when_to_use: Use it when triggered.\n" +
+      "---\n\n" +
+      "Body prose.\n";
+
+    const staged = await stageAugmentSource(
+      locations,
+      path.join(locations.dataRoot, "mp", "acme"),
+      source,
+    );
+
+    // Gate-2 parity: the staged bytes re-parse (do NOT throw).
+    assert.doesNotThrow(() => parseFrontmatter(staged));
+    const { frontmatter } = parseFrontmatter<{
+      description: string;
+      version: string;
+      tags: string;
+    }>(staged);
+    // The folded scalar was folded WITH when_to_use into a single scalar.
+    assert.ok(frontmatter.description.includes("A folded block scalar description"));
+    assert.ok(frontmatter.description.endsWith("Use it when triggered."));
+    // Sibling keys survive byte-identically (still their exact source lines).
+    assert.ok(staged.includes("version: 2.3.1"), "version sibling byte-identical");
+    assert.ok(staged.includes("tags: alpha, beta"), "tags sibling byte-identical");
+    // The multi-line continuation lines are gone (collapsed into one scalar).
+    assert.ok(
+      !staged.includes("  spanning several source lines."),
+      "block-scalar continuation lines removed",
+    );
+  });
+});
+
+test("SKILL-01 lone-CR (\\r-only) unparseable source: the malformed frontmatter is not leaked into the synthesized body (line-ending parity with parseFrontmatter)", async () => {
+  await withTmpScope(async ({ locations }) => {
+    const srcRoot = await mkdtemp(path.join(os.tmpdir(), "skill-cr-src-"));
+    try {
+      // A classic-Mac (lone-CR) source whose closed `---` block holds malformed
+      // YAML. parseFrontmatter normalizes CR->LF and THROWS; the body extractor
+      // must normalize CR the same way so it locates the close and does NOT
+      // embed the malformed frontmatter block in the synthesized skill body.
+      const skillsDir = path.join(srcRoot, "skills");
+      await mkdir(path.join(skillsDir, "bad"), { recursive: true });
+      const loneCr =
+        "---\rname: [unterminated\rdescription: never reached\r---\r\r" +
+        "# Bad Skill\r\rThis body must survive verbatim.\r";
+      await writeFile(path.join(skillsDir, "bad", "SKILL.md"), loneCr);
+
+      const resolved = makeResolved("acme", srcRoot, skillsDir);
+      const prepared = await prepareStageSkills({
+        locations,
+        marketplaceName: "mp",
+        pluginName: "acme",
+        pluginRoot: srcRoot,
+        pluginDataDir: path.join(locations.dataRoot, "mp", "acme"),
+        resolved,
+      });
+      assert.equal(prepared.kind, "staged");
+      assert.equal(prepared.result.degraded.length, 1);
+
+      await commitPreparedSkills(prepared);
+      const staged = await readFile(
+        path.join(locations.skillsTargetDir, "acme-bad", "SKILL.md"),
+        "utf8",
+      );
+
+      // The malformed frontmatter must NOT survive inside the synthesized body.
+      assert.ok(!staged.includes("[unterminated"), "malformed frontmatter must not leak into body");
+      assert.ok(!staged.includes("never reached"), "malformed frontmatter must not leak into body");
+      // The real body survives and the synthesized block re-parses cleanly.
+      assert.ok(staged.includes("This body must survive verbatim."));
+      const { frontmatter } = parseFrontmatter<{
+        name: string;
+        "disable-model-invocation": boolean;
+      }>(staged);
+      assert.equal(frontmatter.name, "acme-bad");
+      assert.equal(frontmatter["disable-model-invocation"], true);
+    } finally {
+      await cleanupStaging(srcRoot, "test-cleanup");
+    }
   });
 });

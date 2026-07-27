@@ -50,12 +50,26 @@ export interface StagedCommandRecord {
   readonly targetPath: string;
 }
 
+/**
+ * CMD-01 / PARSE-01: one record per command whose SOURCE frontmatter could not
+ * be parsed and was neutralized.
+ */
+export interface CommandDegradeRecord {
+  readonly generatedName: string;
+  readonly parseError: string;
+}
+
 /** Result returned to callers after commit (or noop). */
 export interface StageCommandsCommitResult {
   readonly stagedNames: readonly string[];
   /** W-05: callers read `recorded` to populate state.json. */
   readonly recorded: readonly StagedCommandRecord[];
   readonly warnings: readonly string[];
+  /**
+   * The orchestrator maps these to the `{malformed command}` reason token and
+   * the per-component detail line. Empty on the all-valid path (NREG-01).
+   */
+  readonly degraded: readonly CommandDegradeRecord[];
 }
 
 /** Discriminated union -- `kind: "noop" | "staged"`. */

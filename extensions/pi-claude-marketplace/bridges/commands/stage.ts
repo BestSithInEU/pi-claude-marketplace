@@ -25,6 +25,7 @@ import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { assertSafeName } from "../../domain/name.ts";
+import { parseFrontmatter } from "../../platform/pi-api.ts";
 import {
   appendLeakToError,
   appendLeaks,
@@ -43,6 +44,7 @@ import { substituteClaudeVars } from "../../shared/vars.ts";
 import { discoverPluginCommands } from "./discover.ts";
 
 import type {
+  CommandDegradeRecord,
   CommandsReplacement,
   DiscoveredCommand,
   PreparedCommandsStaging,
@@ -99,6 +101,60 @@ export function assertNoCommandCollisions(discovered: readonly DiscoveredCommand
 }
 
 /**
+ * CMD-01 / D-86-07: neutralize an unparseable command source by stripping the
+ * ENTIRE malformed frontmatter block -- the opening `---` line through the
+ * matching closing `---` line -- leaving the real body. A re-parse of the
+ * result RETURNS empty, so Pi's command loader falls back to name-from-filename
+ * + description-from-first-body-line (NOT delimiter-only stripping, which would
+ * leave ex-frontmatter junk as the first body line). Called ONLY on the gate-1
+ * throw arm, where a closed `---`...`---` block is present by construction.
+ *
+ * Newlines are first normalized (CR/CRLF -> LF) with the SAME two-step replace
+ * `parseFrontmatter` applies before its own `\n---` close search, so this scan
+ * agrees with the parser for every line-ending style -- including lone-CR
+ * sources, which would otherwise hide the close from a raw `\n---` search and
+ * turn a graceful degrade into a gate-2 hard-fail. The body is emitted with LF
+ * line endings (what Pi's loader normalizes the staged file to on read anyway).
+ *
+ * Successive leading malformed blocks are stripped until the remainder PARSES
+ * (RETURNS) under Pi's loader: a source whose body itself opens with a second
+ * malformed `---`...`---` block would otherwise re-throw at the PARSE-02 backstop
+ * and turn a graceful degrade into a hard-fail. A leading block that parses
+ * cleanly, or a remainder with no opening `---`, is Pi-acceptable and kept
+ * verbatim (matching what Pi's own loader would do). Each pass removes at least
+ * the opening delimiter, so the loop terminates.
+ */
+function neutralizeCommandFrontmatter(content: string): string {
+  let normalized = content.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+
+  for (;;) {
+    if (!normalized.startsWith("---")) {
+      // No opening fence: parseFrontmatter RETURNS the body as-is, nothing to strip.
+      return normalized;
+    }
+
+    const closeIdx = normalized.indexOf("\n---", 3);
+    if (closeIdx === -1) {
+      // Opening `---` but no close: parseFrontmatter RETURNS, leave unchanged.
+      return normalized;
+    }
+
+    const afterClose = normalized.indexOf("\n", closeIdx + 1);
+    const stripped = afterClose === -1 ? "" : normalized.slice(afterClose + 1);
+
+    try {
+      // A clean parse (empty or valid frontmatter, or no opening fence) means the
+      // remainder is Pi-acceptable -- stop here.
+      parseFrontmatter(stripped);
+      return stripped;
+    } catch {
+      // The remainder still opens with a malformed block; strip it too.
+      normalized = stripped;
+    }
+  }
+}
+
+/**
  * Stage commands into a fresh `<commandsStagingDir>/<uuid>/` tree. Reads
  * each source `.md`, substitutes `${CLAUDE_PLUGIN_ROOT}` /
  * `${CLAUDE_PLUGIN_DATA}` (CM-3), and writes the substituted body to a
@@ -134,6 +190,9 @@ export async function prepareStageCommands(
         stagedNames: Object.freeze<string[]>([]),
         recorded: Object.freeze<StagedCommandRecord[]>([]),
         warnings: Object.freeze([...discoverWarnings]),
+        // CMD-01: the noop branch stages no commands, so no source is parsed and
+        // nothing can degrade -- always empty here.
+        degraded: Object.freeze<CommandDegradeRecord[]>([]),
       },
     };
   }
@@ -144,6 +203,7 @@ export async function prepareStageCommands(
 
   const renamePairs: { from: string; to: string }[] = [];
   const stagedNames: string[] = [];
+  const degraded: CommandDegradeRecord[] = [];
 
   try {
     for (const command of discovered) {
@@ -156,8 +216,36 @@ export async function prepareStageCommands(
       await assertPathInside(locations.promptsTargetDir, targetFile, "target command file");
 
       let content = await readFile(command.commandFile, "utf8");
+
+      // PARSE-01: parse the SOURCE frontmatter BEFORE substitution to establish
+      // attribution ground truth + the degrade trigger. A THROW means a closed
+      // `---` block whose inner YAML is malformed (an author defect); a RETURN
+      // (including absent/empty frontmatter) is the byte-identical passthrough
+      // (NREG-01). The parse is READ-ONLY -- validate, never eval (T-03-17).
+      try {
+        parseFrontmatter(content);
+      } catch (parseErr) {
+        // CMD-01 / D-86-07: neutralize by stripping the entire malformed
+        // frontmatter block, leaving the real body, so Pi's command loader
+        // takes name-from-filename + description-from-first-body-line. No
+        // synthesized placeholder and no disable flag -- Pi's command loader
+        // has no non-empty-description gate.
+        content = neutralizeCommandFrontmatter(content);
+        degraded.push({
+          generatedName: command.generatedName,
+          parseError: errorMessage(parseErr),
+        });
+      }
+
       content = substituteClaudeVars(content, { pluginRoot, pluginData: pluginDataDir });
       await writeFile(stagedFile, content, "utf8");
+
+      // PARSE-02 / D-86-04: re-parse the STAGED bytes as a Pi-acceptability
+      // backstop. The neutralized output is designed to RETURN, so a THROW here
+      // is OUR self-inflicted defect (substitution produced bytes Pi rejects) --
+      // throw loudly so it rides the cleanup catch below; never mask it as
+      // author degradation.
+      parseFrontmatter(content);
 
       renamePairs.push({ from: stagedFile, to: targetFile });
       stagedNames.push(command.generatedName);
@@ -180,6 +268,10 @@ export async function prepareStageCommands(
       stagedNames: Object.freeze(stagedNames),
       recorded: Object.freeze(recorded),
       warnings: Object.freeze([...discoverWarnings]),
+      // CMD-01: one record per command whose SOURCE frontmatter was unparseable
+      // and neutralized (D-86-07). The install orchestrator maps these to the
+      // `{malformed command}` reason token + per-component detail.
+      degraded: Object.freeze(degraded),
     },
     _previousNames: Object.freeze([...previousNames]),
     _renamePairs: Object.freeze(renamePairs),

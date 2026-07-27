@@ -122,7 +122,11 @@ import {
 } from "../../shared/errors.ts";
 import { classifyGitTransportFailure } from "../../shared/git-failure-classifiers.ts";
 import { notifyWithContext } from "../../shared/notify-context.ts";
-import { companionSeverity } from "../../shared/notify-reasons.ts";
+import {
+  companionSeverity,
+  malformedReasonsForKinds,
+  type DegradeKind,
+} from "../../shared/notify-reasons.ts";
 import { notify } from "../../shared/notify.ts";
 import { PathContainmentError } from "../../shared/path-safety.ts";
 import { narrowUnsupportedKinds } from "../../shared/probe-classifiers.ts";
@@ -224,6 +228,14 @@ export type InstallPluginOutcome =
       readonly declaresMcp: boolean;
       /** Post-commit warnings collected in orchestrated mode instead of firing individually. */
       readonly postCommitWarnings?: readonly string[];
+      /**
+       * WARN-01 / D-86-03: the component kinds that degraded on a
+       * frontmatter-parse failure (synthesized skill / neutralized command).
+       * The orchestrated reconcile composer reads this to push the
+       * `{malformed skill}` / `{malformed command}` token onto its installed
+       * row. Absent when nothing degraded.
+       */
+      readonly degradedKinds?: readonly DegradeKind[];
     }
   | {
       /**
@@ -372,6 +384,16 @@ interface InstallCtx {
   bridgeWarnings: string[];
   // Bridge-side per-record AG-5 foreign-content rows -- routed to notifyWarning post-success.
   agentForeignFailures: { generatedName: string; reason: string }[];
+  // SKILL-01 / CMD-01 / WARN-01: per-component frontmatter-parse degrade records
+  // collected from the skills + commands bridges. Feed the one-per-plugin
+  // `{malformed skill}` / `{malformed command}` reason token (standalone row),
+  // the per-component parse-error detail (orchestrated postCommitWarnings), and
+  // the `degradedKinds` outcome seam the reconcile composer consumes.
+  frontmatterDegradations: {
+    kind: DegradeKind;
+    generatedName: string;
+    parseError: string;
+  }[];
   // Mutable handle to the state snapshot loaded by the caller's locked transaction.
   readonly stateSnapshot: ExtensionState;
 }
@@ -863,6 +885,7 @@ export async function runInstallLedger(
     stagedMcpServerNames: [],
     bridgeWarnings: [],
     agentForeignFailures: [],
+    frontmatterDegradations: [],
     stateSnapshot: state,
   };
 
@@ -883,6 +906,11 @@ export async function runInstallLedger(
       // Set before commit so undo can remove any dirs that were placed if
       // commit fails mid-loop (partial rename success leaves K orphans).
       c.stagedSkillNames = prep.result.recorded.map((r) => r.generatedName);
+      // SKILL-01 / WARN-01: collect per-skill frontmatter degrade records.
+      for (const d of prep.result.degraded) {
+        c.frontmatterDegradations.push({ kind: "skill", ...d });
+      }
+
       const leak = await commitPreparedSkills(prep);
       if (leak !== undefined) {
         c.bridgeWarnings.push(leak);
@@ -916,6 +944,11 @@ export async function runInstallLedger(
       c.commandsPrep = prep;
       // Set before commit for the same reason as stagedSkillNames above.
       c.stagedCommandNames = prep.result.recorded.map((r) => r.generatedName);
+      // CMD-01 / WARN-01: collect per-command frontmatter degrade records.
+      for (const d of prep.result.degraded) {
+        c.frontmatterDegradations.push({ kind: "command", ...d });
+      }
+
       const leak = await commitPreparedCommands(prep);
       if (leak !== undefined) {
         c.bridgeWarnings.push(leak);
@@ -1645,6 +1678,20 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
     // else: D-19-01 -- dropped in standalone mode.
   }
 
+  // WARN-01 / D-86-03: skills/commands whose SOURCE frontmatter could not be
+  // parsed were degraded (synthesized / neutralized) but still installed. The
+  // per-component `<plugin>/<component>: <parse error>` detail rides
+  // postCommitWarnings (orchestrated only, per D-19-01); the closed-set reason
+  // token rides the install row below. Standalone drops the detail exactly like
+  // agentForeignFailures.
+  for (const d of installCtx.frontmatterDegradations) {
+    const msg = `${plugin}/${d.generatedName}: ${d.parseError}`;
+    if (orchestrated) {
+      postCommitWarnings.push(msg);
+    }
+    // else: D-19-01 -- dropped in standalone mode.
+  }
+
   // Bridge-side soft warnings (e.g. agents bridge cleanup-leak return
   // values aggregated during the staged phases). The standalone-mode
   // user-visible warning is DROPPED per D-19-01: bridge-side soft
@@ -1710,6 +1757,15 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
       reasons.push("orphan rewake");
     }
 
+    // WARN-01 / D-86-03: one `{malformed skill}` / `{malformed command}` token
+    // per plugin regardless of how many components of that kind degraded
+    // (mirrors orphan rewake's one-row-per-plugin). The free-text parse-error
+    // detail rode postCommitWarnings above (orchestrated only). Reasons share
+    // the brace block with any companion soft-dep markers per MSG-GR-4.
+    reasons.push(
+      ...malformedReasonsForKinds(installCtx.frontmatterDegradations.map((d) => d.kind)),
+    );
+
     // FSTAT-07 / D-66-04: when the live resolved state is `partially-available`, the
     // install was partially completed with one or more components dropped -- the
     // success row reports `(partially-installed)` carrying the dropped-component
@@ -1734,13 +1790,19 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
     // gains the warning summary line). A loaded companion -- or no declared
     // companion -- keeps the info stamp. Applies to BOTH the clean `installed`
     // and degraded `partially-installed` success arms.
-    const successSeverity = companionSeverity(
-      {
-        declaresAgents: installCtx.stagedAgentNames.length > 0,
-        declaresMcp: installCtx.stagedMcpServerNames.length > 0,
-      },
-      softDepStatus(pi),
-    );
+    // SEV-01 / WARN-01: a degraded-but-installed component (synthesized skill /
+    // neutralized command) is "carried out but short of ideal" -> warning,
+    // independent of companion state. Otherwise the companion probe decides.
+    const successSeverity =
+      installCtx.frontmatterDegradations.length > 0
+        ? "warning"
+        : companionSeverity(
+            {
+              declaresAgents: installCtx.stagedAgentNames.length > 0,
+              declaresMcp: installCtx.stagedMcpServerNames.length > 0,
+            },
+            softDepStatus(pi),
+          );
     const installedRow: InstallMsg =
       installCtx.resolved.state === "partially-available"
         ? {
@@ -1776,12 +1838,18 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
     ]);
   }
 
+  // WARN-01 / D-86-03: the inert seam the orchestrated reconcile composer reads
+  // to push the row token. Set of degraded kinds (skill before command by
+  // collection order), omitted when nothing degraded.
+  const degradedKinds = Array.from(new Set(installCtx.frontmatterDegradations.map((d) => d.kind)));
+
   return {
     status: "installed",
     resourcesChanged: stagedAny,
     declaresAgents: installCtx.stagedAgentNames.length > 0,
     declaresMcp: installCtx.stagedMcpServerNames.length > 0,
     ...(postCommitWarnings.length > 0 && { postCommitWarnings }),
+    ...(degradedKinds.length > 0 && { degradedKinds }),
   };
 }
 

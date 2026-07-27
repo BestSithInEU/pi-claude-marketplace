@@ -21,6 +21,7 @@ import { cp, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promis
 import path from "node:path";
 
 import { assertSafeName } from "../../domain/name.ts";
+import { parseFrontmatter } from "../../platform/pi-api.ts";
 import { appendLeakToError, errorMessage, ManualRecoveryError } from "../../shared/errors.ts";
 import {
   cleanupStaging,
@@ -32,11 +33,19 @@ import { assertPathInside } from "../../shared/path-safety.ts";
 import { substituteClaudeVars } from "../../shared/vars.ts";
 
 import { discoverPluginSkills } from "./discover.ts";
+import {
+  firstBodyParagraph,
+  foldWhenToUse,
+  setDescriptionScalar,
+  synthesizeUnparseableSkill,
+  truncate1536,
+} from "./frontmatter-degrade.ts";
 import { rewriteFrontmatterName } from "./rewrite-frontmatter.ts";
 
 import type {
   DiscoveredSkill,
   PreparedSkillsStaging,
+  SkillDegradeRecord,
   SkillsReplacement,
   StagedSkillRecord,
   StageSkillsInput,
@@ -83,6 +92,95 @@ export function assertNoSkillCollisions(discovered: readonly DiscoveredSkill[]):
 }
 
 /**
+ * SKILL-01: extract the markdown body from a skill source whose frontmatter
+ * block failed to parse, reproducing `parseFrontmatter`'s OWN split so the
+ * synthesized block preserves the body byte-for-byte identically to the
+ * parseable path (PARSE-01 encoding parity). Newlines are normalized (CR/CRLF ->
+ * LF, including lone CR) exactly as the parser does; the opening fence is the
+ * parser's anchored `---` prefix (`startsWith`, NOT a per-line `trim`); and the
+ * close is the parser's `\n---` prefix search. An exotic delimiter -- a `---x`
+ * line or an indented `---` -- is therefore classified identically to Pi rather
+ * than by a looser `line.trim() === "---"` match. Called ONLY on the gate-1
+ * throw arm, where a closed `---` block is present by construction -- the body
+ * is everything after the closing delimiter, trimmed. Falls back to the whole
+ * normalized+trimmed content if no opening/closing delimiter is found.
+ */
+function extractBodyAfterFrontmatter(content: string): string {
+  const normalized = content.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+  if (!normalized.startsWith("---")) {
+    return normalized.trim();
+  }
+
+  const closeIndex = normalized.indexOf("\n---", 3);
+  if (closeIndex === -1) {
+    return normalized.trim();
+  }
+
+  return normalized.slice(closeIndex + 4).trim();
+}
+
+/**
+ * SKILL-02 empty probe: a well-formed skill with neither a `description` nor any
+ * prose body yields an empty first-paragraph candidate, and Pi drops a skill
+ * whose `description` is empty (`skill: null`). Emit a short fixed non-empty
+ * scalar so the skill still loads. Distinct from the unparseable-source
+ * placeholder (D-86-02): the frontmatter parsed cleanly here; only the
+ * description is absent.
+ */
+const MISSING_DESCRIPTION_PLACEHOLDER = "No description provided.";
+
+/**
+ * SKILL-02 / WTU-01 / WTU-02: augment the `description` on the well-formed
+ * (gate-1 RETURN) arm. Reads the PARSED `description` / `when_to_use` values and
+ * the parsed `body`:
+ *   - SKILL-02 / D-86-06: an absent or empty `description` is filled from the
+ *     first body paragraph (`firstBodyParagraph`); an empty candidate falls back
+ *     to a fixed non-empty placeholder so Pi still loads the skill.
+ *   - WTU-01 / A1: a non-empty `when_to_use` is folded in after a single `\n`.
+ *   - WTU-02 / D-86-05 / A2: the combined text is hard-cut at 1,536 code units
+ *     (never Pi's 1,024 warning threshold).
+ * The value is written back through `setDescriptionScalar` (full node-span
+ * replace + safe double-quoted scalar), so a `>-`/`|` block-scalar source
+ * `description` cannot be corrupted (the SKILL-03 class). NREG-01: when the
+ * effective value equals the source `description` AND no `when_to_use` was
+ * folded, the frontmatter is left byte-identical (no re-emit).
+ */
+function augmentSkillDescription(
+  content: string,
+  frontmatter: Record<string, unknown>,
+  body: string,
+  vars: { pluginRoot: string; pluginData: string },
+): string {
+  const rawDescription = frontmatter.description;
+  const sourceDescription = typeof rawDescription === "string" ? rawDescription : "";
+  const rawWhenToUse = frontmatter.when_to_use;
+  const whenToUse = typeof rawWhenToUse === "string" ? rawWhenToUse : "";
+
+  const base = sourceDescription === "" ? firstBodyParagraph(body) : sourceDescription;
+  const folded = foldWhenToUse(base, whenToUse === "" ? undefined : whenToUse);
+  // SK-4 / AG-8: substitute the Claude path vars BEFORE the value is escaped into
+  // the double-quoted scalar. The later whole-file `substituteClaudeVars` (below)
+  // would otherwise splice a Windows path's backslashes into the ALREADY-escaped
+  // scalar, forming an invalid `\U...`-class escape that fails the PARSE-02
+  // backstop; substituting first lets `emitSafeDoubleQuotedScalar` escape those
+  // backslashes. The cap is applied pre-substitution (the WTU-02 listing budget
+  // measures the authored text), matching the prior whole-file ordering.
+  const effective = substituteClaudeVars(
+    truncate1536(folded === "" ? MISSING_DESCRIPTION_PLACEHOLDER : folded),
+    vars,
+  );
+
+  // NREG-01: a present, in-cap `description` with no `when_to_use` and no path
+  // var to expand is unchanged -- do NOT re-emit it as a double-quoted scalar
+  // (byte-for-byte invariant).
+  if (effective === sourceDescription) {
+    return content;
+  }
+
+  return setDescriptionScalar(content, effective);
+}
+
+/**
  * Phase-1 of the skills bridge two-phase commit:
  *   1. Discover skills in the source plugin (SK-5).
  *   2. Refuse on RN-6 collisions.
@@ -122,6 +220,7 @@ export async function prepareStageSkills(input: StageSkillsInput): Promise<Prepa
         stagedNames: Object.freeze([]),
         recorded: Object.freeze([]),
         warnings: Object.freeze([...discoverWarnings]),
+        degraded: Object.freeze([]),
       },
     };
   }
@@ -133,6 +232,7 @@ export async function prepareStageSkills(input: StageSkillsInput): Promise<Prepa
   const renamePairs: { from: string; to: string }[] = [];
   const stagedNames: string[] = [];
   const recorded: StagedSkillRecord[] = [];
+  const degraded: SkillDegradeRecord[] = [];
 
   try {
     for (const skill of discovered) {
@@ -156,12 +256,53 @@ export async function prepareStageSkills(input: StageSkillsInput): Promise<Prepa
         force: false,
       });
 
-      // SK-3 rewrite + SK-4 substitute on the SKILL.md only.
       const skillMdPath = path.join(stagedDir, "SKILL.md");
       let content = await readFile(skillMdPath, "utf8");
-      content = rewriteFrontmatterName(content, skill.generatedName);
+
+      // PARSE-01: parse the SOURCE frontmatter BEFORE any rewrite/substitution
+      // to establish attribution ground truth and the degrade trigger. A THROW
+      // means a closed `---` block whose inner YAML is malformed (an author
+      // defect); a RETURN (including absent/empty frontmatter) is the happy
+      // arm. The parse is READ-ONLY -- validate, never eval (preserves T-03-17).
+      let parsed: { frontmatter: Record<string, unknown>; body: string } | undefined;
+      try {
+        parsed = parseFrontmatter(content);
+      } catch (parseErr) {
+        // SKILL-01 / D-86-02: unparseable source -> synthesize a known-good
+        // `disable-model-invocation` block (body preserved verbatim) so the
+        // skill still installs (no hard-fail), stays invocable by `/name`, and
+        // is never auto-invoked. The actionable detail (plugin, component,
+        // parse error) rides the install-time warning channel instead.
+        content = synthesizeUnparseableSkill(
+          extractBodyAfterFrontmatter(content),
+          skill.generatedName,
+        );
+        degraded.push({
+          generatedName: skill.generatedName,
+          parseError: errorMessage(parseErr),
+        });
+      }
+
+      // The parseable (gate-1 RETURN) arm keeps today's SK-3 name rewrite, then
+      // layers the SKILL-02 / WTU-01 / WTU-02 augment arm on the parsed values;
+      // the synthesized arm already emits the generated `name` + a placeholder
+      // `description`, so it skips both. SK-4 substitution runs on both arms.
+      if (parsed !== undefined) {
+        content = rewriteFrontmatterName(content, skill.generatedName);
+        content = augmentSkillDescription(content, parsed.frontmatter, parsed.body, {
+          pluginRoot,
+          pluginData: pluginDataDir,
+        });
+      }
+
       content = substituteClaudeVars(content, { pluginRoot, pluginData: pluginDataDir });
       await writeFile(skillMdPath, content, "utf8");
+
+      // PARSE-02 / D-86-04: re-parse the STAGED bytes as a Pi-acceptability
+      // backstop. A THROW here means our OWN rewrite/substitution produced
+      // bytes Pi would reject -- our defect, not the author's. Throw loudly so
+      // it rides the cleanup catch below; never mask it as author degradation.
+      parseFrontmatter(content);
 
       renamePairs.push({ from: stagedDir, to: targetDir });
       stagedNames.push(skill.generatedName);
@@ -183,6 +324,7 @@ export async function prepareStageSkills(input: StageSkillsInput): Promise<Prepa
       stagedNames: Object.freeze(stagedNames),
       recorded: Object.freeze(recorded),
       warnings: Object.freeze([...discoverWarnings]),
+      degraded: Object.freeze(degraded),
     },
     _previousNames: Object.freeze(previousNames),
     _renamePairs: Object.freeze(renamePairs),

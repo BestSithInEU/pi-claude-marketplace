@@ -4,14 +4,14 @@ import type { SoftDepStatus } from "../platform/pi-api.ts";
 /**
  * shared/notify-reasons.ts -- the topic-grouped organization of the closed
  * reasons set (D-09). The byte-critical runtime tuple `REASONS` stays declared
- * in `notify.ts` as the SINGLE source of catalog truth (OUT-08: the 35-entry
+ * in `notify.ts` as the SINGLE source of catalog truth (OUT-08: the 37-entry
  * membership AND order must stay byte-identical for catalog stability); this
  * module reorganizes that closed set into shared topic-grouped enums + a
  * structural completeness proof WITHOUT recomposing the `REASONS` tuple (which
  * would risk reordering). The topic groups below are typed views over the same
  * closed `Reason` literals, so a command module can reference an
  * intent-meaningful group (e.g. the failure-class reasons) instead of the flat
- * 35-entry set.
+ * 37-entry set.
  *
  * Each group uses the `as const` tuple + `(typeof X)[number]` literal-union
  * idiom. Membership of every literal is checked at compile time against the
@@ -113,6 +113,13 @@ export const FAILURE_REASONS = [
   // unsupported -- it is a malformation of a SUPPORTED feature the resolver
   // parses, so it lives here and NOT in UNSUPPORTED_REASONS.
   "malformed mcp",
+  // CLASS-01 / D-86-01: a skill / command whose source frontmatter could not be
+  // parsed by Pi's own `parseFrontmatter`. Failure-class (a malformation of a
+  // SUPPORTED component the skills/commands bridges stage), NOT unsupported --
+  // the exact `malformed mcp` classification precedent, split per-kind for
+  // truthful attribution.
+  "malformed skill",
+  "malformed command",
   "not in manifest",
   "rollback partial",
   "lock held",
@@ -126,6 +133,50 @@ export const FAILURE_REASONS = [
   "concurrently updated",
 ] as const;
 export type FailureReason = (typeof FAILURE_REASONS)[number];
+
+/**
+ * WARN-01 / CLASS-01 / D-86-03: a component kind that installs in DEGRADED form
+ * when its SOURCE frontmatter cannot be parsed by Pi's own `parseFrontmatter`
+ * (skill -> synthesized `disable-model-invocation` block; command -> neutralized
+ * frontmatter). Both surfaces map a degraded kind to its `(installed)`-row reason
+ * token through `malformedReasonsForKinds`.
+ */
+export type DegradeKind = "skill" | "command";
+
+/**
+ * The closed map from a degraded component kind to its one failure-class token.
+ * A `Record<DegradeKind, FailureReason>` (via `satisfies`) so a new kind added to
+ * `DegradeKind` fails to compile here until it is given a token -- the single
+ * exhaustiveness guard replacing the two hand-maintained per-kind `if` ladders
+ * the install and reconcile surfaces used to keep in sync by convention.
+ */
+const MALFORMED_REASON_BY_KIND = {
+  skill: "malformed skill",
+  command: "malformed command",
+} as const satisfies Record<DegradeKind, FailureReason>;
+
+/** Canonical emit order for the per-kind tokens: skill before command. */
+const DEGRADE_KIND_ORDER = ["skill", "command"] as const satisfies readonly DegradeKind[];
+
+/**
+ * WARN-01 / CLASS-01 / D-86-03: map degraded component kinds onto ordered,
+ * de-duplicated `(installed)`-row reason tokens -- one `malformed skill` /
+ * `malformed command` per kind regardless of how many components of that kind
+ * degraded, and regardless of duplicate or unordered input. Empty / absent in
+ * -> empty out, so a clean install carries no reasons brace (NREG-01).
+ */
+export function malformedReasonsForKinds(
+  kinds: Iterable<DegradeKind> | undefined,
+): readonly FailureReason[] {
+  if (kinds === undefined) {
+    return [];
+  }
+
+  const present = new Set(kinds);
+  return DEGRADE_KIND_ORDER.filter((kind) => present.has(kind)).map(
+    (kind) => MALFORMED_REASON_BY_KIND[kind],
+  );
+}
 
 /**
  * D-09: the shared topic-grouped reasons -- the union of the three groups
