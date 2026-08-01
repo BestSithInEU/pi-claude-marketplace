@@ -314,12 +314,12 @@ test("PHOOK-01: unmapped tool (MultiEdit) drops the group with cond=unmapped-too
   ]);
 });
 
-test("PHOOK-01: non-bucket-A event (Stop) drops the whole event (P1)", () => {
+test("PHOOK-01: non-bucket-A event (Notification) drops the whole event (P1)", () => {
   const partition = partitionHooks({
-    Stop: [{ matcher: "", hooks: [{ type: "command", command: "/bin/false" }] }],
+    Notification: [{ matcher: "", hooks: [{ type: "command", command: "/bin/false" }] }],
   });
   assert.deepEqual(partition.supported, {});
-  assert.deepEqual(partition.dropped, [{ kind: "event", event: "Stop" }]);
+  assert.deepEqual(partition.dropped, [{ kind: "event", event: "Notification" }]);
 });
 
 test("PHOOK-01: non-empty matcher on UserPromptSubmit drops the group with cond=no-matcher-support (c)", () => {
@@ -386,6 +386,74 @@ test("PHOOK-01: PreCompact empty matcher is admissible (match-all, no drop)", ()
   assert.deepEqual(partition.dropped, []);
 });
 
+test("ADMIT-01: non-empty matcher on Stop drops the group with cond=no-matcher-support", () => {
+  // Stop carries the null no-matcher sentinel (same disposition as
+  // UserPromptSubmit): Claude has no upstream matcher support, so any
+  // non-empty matcher drops the group per strict-supportability (D-58-06).
+  const partition = partitionHooks({
+    Stop: [{ matcher: "anything", hooks: [{ type: "command", command: "/bin/false" }] }],
+  });
+  assert.deepEqual(partition.supported, {});
+  assert.deepEqual(partition.dropped, [
+    { kind: "group", event: "Stop", matcher: "anything", cond: "no-matcher-support" },
+  ]);
+});
+
+test("ADMIT-01: Stop match-all matcher is admissible (no drop)", () => {
+  // Match-all (`""` / `"*"`) short-circuits before the no-matcher-support
+  // gate, so a Stop group with a match-all matcher is admitted.
+  for (const matcher of ["", "*"]) {
+    const config = {
+      Stop: [{ matcher, hooks: [{ type: "command", command: "/bin/false" }] }],
+    };
+    const partition = partitionHooks(config);
+    assert.deepEqual(partition.supported, config, `match-all "${matcher}" must be admissible`);
+    assert.deepEqual(partition.dropped, []);
+  }
+});
+
+test("SFAIL-03: StopFailure matcher of an in-vocabulary value (rate_limit) is admitted", () => {
+  // `rate_limit` is a member of the closed 10-value error-type set --
+  // exact whole-string membership admits it (no drop).
+  const config = {
+    StopFailure: [{ matcher: "rate_limit", hooks: [{ type: "command", command: "/bin/false" }] }],
+  };
+  const partition = partitionHooks(config);
+  assert.deepEqual(partition.supported, config);
+  assert.deepEqual(partition.dropped, []);
+});
+
+test("SFAIL-03: StopFailure out-of-vocabulary matcher drops the group with cond=closed-set", () => {
+  // A value outside the closed 10-value set trips TOOL-02 as closed-set.
+  const partition = partitionHooks({
+    StopFailure: [{ matcher: "bogus_value", hooks: [{ type: "command", command: "/bin/false" }] }],
+  });
+  assert.deepEqual(partition.supported, {});
+  assert.deepEqual(partition.dropped, [
+    { kind: "group", event: "StopFailure", matcher: "bogus_value", cond: "closed-set" },
+  ]);
+});
+
+test("SFAIL-03: StopFailure pipe-compound matcher drops the group with cond=closed-set (no pipe splitting)", () => {
+  // Membership is exact whole-string byte-equality -- a pipe compound is a
+  // single string absent from the closed set, NOT two tokenized values, so
+  // it trips closed-set even though both halves are individually valid.
+  const partition = partitionHooks({
+    StopFailure: [
+      { matcher: "rate_limit|server_error", hooks: [{ type: "command", command: "/bin/false" }] },
+    ],
+  });
+  assert.deepEqual(partition.supported, {});
+  assert.deepEqual(partition.dropped, [
+    {
+      kind: "group",
+      event: "StopFailure",
+      matcher: "rate_limit|server_error",
+      cond: "closed-set",
+    },
+  ]);
+});
+
 test("PHOOK-01 / Q1: non-command handler (http) drops at HANDLER granularity (d)", () => {
   // HOOK-03 lenient schema accepts unknown handler types; the partition
   // drops the non-command handler at HANDLER granularity (Q1). The group's
@@ -428,12 +496,12 @@ test("D-71-02: a mixed event keeps the clean group and drops only the unsupporta
 test("D-71-01: a supported event survives while a sibling non-bucket-A event drops", () => {
   const partition = partitionHooks({
     PostToolUse: [{ matcher: "Edit", hooks: [{ type: "command", command: "/bin/edit" }] }],
-    Stop: [{ hooks: [{ type: "command", command: "/bin/stop" }] }],
+    Notification: [{ hooks: [{ type: "command", command: "/bin/notification" }] }],
   });
   assert.deepEqual(partition.supported, {
     PostToolUse: [{ matcher: "Edit", hooks: [{ type: "command", command: "/bin/edit" }] }],
   });
-  assert.deepEqual(partition.dropped, [{ kind: "event", event: "Stop" }]);
+  assert.deepEqual(partition.dropped, [{ kind: "event", event: "Notification" }]);
 });
 
 test("PHOOK-01 / Q1: a group with command + non-command handlers keeps the command handler", () => {
@@ -462,7 +530,7 @@ test("PHOOK-01 / Q1: a group with command + non-command handlers keeps the comma
 test("PHOOK-03: parseHooksConfig success arm returns the filtered subset as value plus dropped", () => {
   const raw = JSON.stringify({
     PostToolUse: [{ matcher: "Edit", hooks: [{ type: "command", command: "/bin/edit" }] }],
-    Stop: [{ hooks: [{ type: "command", command: "/bin/stop" }] }],
+    Notification: [{ hooks: [{ type: "command", command: "/bin/notification" }] }],
   });
   const result = parseHooksConfig(raw, TEST_IF_CTX, TEST_COMPILE_IF);
   assert.equal(result.ok, true);
@@ -470,7 +538,7 @@ test("PHOOK-03: parseHooksConfig success arm returns the filtered subset as valu
     assert.deepEqual(result.value, {
       PostToolUse: [{ matcher: "Edit", hooks: [{ type: "command", command: "/bin/edit" }] }],
     });
-    assert.deepEqual(result.dropped, [{ kind: "event", event: "Stop" }]);
+    assert.deepEqual(result.dropped, [{ kind: "event", event: "Notification" }]);
   }
 });
 
@@ -600,14 +668,12 @@ test("parseHooksConfig admits the full asyncRewake field family", () => {
 // The fixture under `tests/fixtures/hookify-hooks.json` is derived from
 // hookify@claude-plugins-official's hooks.json (`tmp/pi-uat/agent/
 // pi-claude-marketplace/sources/claude-plugins-official/plugins/hookify/
-// hooks/hooks.json`) with one deliberate slim: the upstream `Stop` event arm
-// is REMOVED because `Stop` is NOT a member of `BUCKET_A_EVENTS` (see
-// `extensions/pi-claude-marketplace/domain/components/hook-events.ts`).
-// v1.13's supportability gate `checkMatcherSupportability` trips
-// `(c) non-bucket-A event: Stop` before the wrapper-acceptance verdict can
-// land. The slim isolates this test to the wire-format wrapper question --
-// the only question this plan owns. Stop-event admission is deferred
-// (`BUCKET_A_EVENTS` extension is a sibling concern, v1.14+).
+// hooks/hooks.json`), carrying its full real wire bytes: the PreToolUse,
+// PostToolUse, Stop, and UserPromptSubmit event arms. `Stop` is a member of
+// `BUCKET_A_EVENTS` (see
+// `extensions/pi-claude-marketplace/domain/components/hook-events.ts`), so
+// every arm is admitted and the wrapper unwraps cleanly to the bare
+// event-keys record.
 //
 // The fixture pins the parser's wrapper-detection arm against real upstream
 // wire bytes; any future schema change that re-narrows the parser to the
@@ -616,7 +682,7 @@ test("parseHooksConfig admits the full asyncRewake field family", () => {
 
 const FIXTURE_DIR = path.dirname(fileURLToPath(import.meta.url));
 
-test("parseHooksConfig accepts the upstream plugin-format wrapper (hookify wire bytes, bucket-A slim)", async () => {
+test("parseHooksConfig accepts the upstream plugin-format wrapper (hookify wire bytes)", async () => {
   const fixturePath = path.resolve(FIXTURE_DIR, "../../fixtures/hookify-hooks.json");
   const raw = await readFile(fixturePath, "utf8");
 
@@ -625,11 +691,11 @@ test("parseHooksConfig accepts the upstream plugin-format wrapper (hookify wire 
   assert.equal(result.ok, true);
   if (result.ok) {
     // After the wrapper-unwrap arm, the parser's `value` is the bare
-    // event-keys record sourced from the upstream wrapper's `hooks` field.
-    // Bucket-A event keys hookify ships (Stop arm slimmed to keep the
-    // fixture inside v1.13's BUCKET_A_EVENTS scope).
+    // event-keys record sourced from the upstream wrapper's `hooks` field --
+    // every bucket-A event key hookify ships, including the restored Stop arm.
     assert.ok("PreToolUse" in result.value);
     assert.ok("PostToolUse" in result.value);
+    assert.ok("Stop" in result.value);
     assert.ok("UserPromptSubmit" in result.value);
   }
 });
@@ -641,30 +707,30 @@ test("parseHooksConfig accepts the upstream plugin-format wrapper (hookify wire 
 // security-guidance) are not in the local checkout.
 // ──────────────────────────────────────────────────────────────────────────
 
-test("PHOOK-01: hooks-stop-only fixture partitions to the empty subset (Q2 edge)", async () => {
+test("PHOOK-01: hooks-notification-only fixture partitions to the empty subset (Q2 edge)", async () => {
   const raw = await readFile(
-    path.resolve(FIXTURE_DIR, "../../fixtures/hooks-stop-only.json"),
+    path.resolve(FIXTURE_DIR, "../../fixtures/hooks-notification-only.json"),
     "utf8",
   );
   const result = parseHooksConfig(raw, TEST_IF_CTX, TEST_COMPILE_IF, { skipIfMap: true });
   assert.equal(result.ok, true);
   if (result.ok) {
     assert.deepEqual(result.value, {});
-    assert.deepEqual(result.dropped, [{ kind: "event", event: "Stop" }]);
+    assert.deepEqual(result.dropped, [{ kind: "event", event: "Notification" }]);
   }
 });
 
-test("PHOOK-01: hooks-posttooluse-and-stop fixture keeps PostToolUse, drops Stop", async () => {
+test("PHOOK-01: hooks-posttooluse-and-notification fixture keeps PostToolUse, drops Notification", async () => {
   const raw = await readFile(
-    path.resolve(FIXTURE_DIR, "../../fixtures/hooks-posttooluse-and-stop.json"),
+    path.resolve(FIXTURE_DIR, "../../fixtures/hooks-posttooluse-and-notification.json"),
     "utf8",
   );
   const result = parseHooksConfig(raw, TEST_IF_CTX, TEST_COMPILE_IF, { skipIfMap: true });
   assert.equal(result.ok, true);
   if (result.ok) {
     assert.ok("PostToolUse" in result.value);
-    assert.ok(!("Stop" in result.value));
-    assert.deepEqual(result.dropped, [{ kind: "event", event: "Stop" }]);
+    assert.ok(!("Notification" in result.value));
+    assert.deepEqual(result.dropped, [{ kind: "event", event: "Notification" }]);
   }
 });
 

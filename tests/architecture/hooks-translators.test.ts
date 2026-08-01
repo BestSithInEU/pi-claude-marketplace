@@ -7,11 +7,11 @@
 //
 // Technique:
 //   - Block A: per-event translator-presence sweep -- the closed-set
-//     bucket-A 8-tuple from `domain/components/hook-events.ts` drives a
-//     dynamic-import of every `bridges/hooks/payloads/<kebab>.ts`
+//     `DISPATCHABLE_EVENTS` 10-tuple from `domain/components/hook-events.ts`
+//     drives a dynamic-import of every `bridges/hooks/payloads/<kebab>.ts`
 //     sibling file; each module must export a `translate` function.
-//     Adding a ninth bucket-A event to the upstream tuple without
-//     shipping a matching translator file red-fails this block.
+//     Adding a dispatchable event to the upstream tuple without shipping
+//     a matching translator file red-fails this block.
 //   - Block B: per-event round-trip fixtures -- one hand-authored
 //     `(piEvent, translationContext, expectedJson)` triple per event;
 //     `JSON.stringify(translate(piEvent, ctx))` must equal the locked
@@ -31,11 +31,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BUCKET_A_EVENTS } from "../../extensions/pi-claude-marketplace/domain/components/hook-events.ts";
+import {
+  BUCKET_A_EVENTS,
+  DISPATCHABLE_EVENTS,
+} from "../../extensions/pi-claude-marketplace/domain/components/hook-events.ts";
 
 import type { TranslationContext } from "../../extensions/pi-claude-marketplace/bridges/hooks/translation-context.ts";
 import type {
-  BucketAEvent,
+  DispatchableEvent,
   ToolEvent,
 } from "../../extensions/pi-claude-marketplace/domain/components/hook-events.ts";
 
@@ -49,13 +52,13 @@ const ctx: TranslationContext = {
   cwd: "/proj",
 };
 
-// Closed-set redeclaration of the bucket-A event names alongside the
-// upstream `BUCKET_A_EVENTS` import. The architecture test compares the
-// two tuples in Block A; if a future contributor adds an event upstream
-// without updating this local mirror (and the kebab map below + fixture
-// + expected JSON), the count-equality gate red-fails before any
-// translator-presence check runs.
-const LOCAL_BUCKET_A: readonly BucketAEvent[] = [
+// Closed-set redeclaration of the dispatchable event names alongside the
+// upstream `DISPATCHABLE_EVENTS` import. The architecture test compares
+// the two tuples in Block A; if a future contributor adds a dispatchable
+// event upstream without updating this local mirror (and the kebab map
+// below + fixture + expected JSON), the count-equality gate red-fails
+// before any translator-presence check runs.
+const LOCAL_DISPATCHABLE: readonly DispatchableEvent[] = [
   "SessionStart",
   "UserPromptSubmit",
   "PreToolUse",
@@ -64,9 +67,11 @@ const LOCAL_BUCKET_A: readonly BucketAEvent[] = [
   "PreCompact",
   "PostCompact",
   "SessionEnd",
+  "Stop",
+  "StopFailure",
 ] as const;
 
-const EVENT_TO_KEBAB: Readonly<Record<BucketAEvent, string>> = {
+const EVENT_TO_KEBAB: Readonly<Record<DispatchableEvent, string>> = {
   SessionStart: "session-start",
   UserPromptSubmit: "user-prompt-submit",
   PreToolUse: "pre-tool-use",
@@ -75,6 +80,8 @@ const EVENT_TO_KEBAB: Readonly<Record<BucketAEvent, string>> = {
   PreCompact: "pre-compact",
   PostCompact: "post-compact",
   SessionEnd: "session-end",
+  Stop: "stop",
+  StopFailure: "stop-failure",
 };
 
 // The three tool events the TOOL-01 helper must apply to (Block C/D
@@ -89,7 +96,7 @@ interface TranslatorModule {
   translate: (event: unknown, ctx: TranslationContext) => unknown;
 }
 
-async function loadTranslator(name: BucketAEvent): Promise<TranslatorModule> {
+async function loadTranslator(name: DispatchableEvent): Promise<TranslatorModule> {
   const kebab = EVENT_TO_KEBAB[name];
   const mod = (await import(
     `../../extensions/pi-claude-marketplace/bridges/hooks/payloads/${kebab}.ts`
@@ -101,7 +108,7 @@ async function loadTranslator(name: BucketAEvent): Promise<TranslatorModule> {
 // the translator reads. Cast through `unknown` because the synthetic
 // fixtures only populate the fields under test, not the full peer-dep
 // shape.
-const EVENT_FIXTURES: Readonly<Record<BucketAEvent, unknown>> = {
+const EVENT_FIXTURES: Readonly<Record<DispatchableEvent, unknown>> = {
   SessionStart: { type: "session_start", reason: "startup" },
   UserPromptSubmit: {
     type: "input",
@@ -141,9 +148,11 @@ const EVENT_FIXTURES: Readonly<Record<BucketAEvent, unknown>> = {
     fromExtension: false,
   },
   SessionEnd: { type: "session_shutdown", reason: "quit" },
+  Stop: { last_assistant_message: "done", stop_hook_active: false },
+  StopFailure: { error: "server_error", last_assistant_message: "boom" },
 };
 
-const EXPECTED_JSON: Readonly<Record<BucketAEvent, string>> = {
+const EXPECTED_JSON: Readonly<Record<DispatchableEvent, string>> = {
   SessionStart:
     '{"session_id":"sess-1","transcript_path":"/tmp/t.jsonl","cwd":"/proj","hook_event_name":"SessionStart","source":"startup"}',
   UserPromptSubmit:
@@ -160,30 +169,40 @@ const EXPECTED_JSON: Readonly<Record<BucketAEvent, string>> = {
     '{"session_id":"sess-1","transcript_path":"/tmp/t.jsonl","cwd":"/proj","hook_event_name":"PostCompact","trigger":"auto"}',
   SessionEnd:
     '{"session_id":"sess-1","transcript_path":"/tmp/t.jsonl","cwd":"/proj","hook_event_name":"SessionEnd","reason":"quit"}',
+  Stop: '{"session_id":"sess-1","transcript_path":"/tmp/t.jsonl","cwd":"/proj","hook_event_name":"Stop","last_assistant_message":"done","stop_hook_active":false}',
+  StopFailure:
+    '{"session_id":"sess-1","transcript_path":"/tmp/t.jsonl","cwd":"/proj","hook_event_name":"StopFailure","error":"server_error","last_assistant_message":"boom"}',
 };
 
 // ──────────────────────────────────────────────────────────────────────────
 // Block A: PAYL-01 / D-60-04 -- per-event translator presence
 // ──────────────────────────────────────────────────────────────────────────
 
-test("PAYL-01: every bucket-A event has a translator module exporting `translate`", async () => {
-  // Iterates the BUCKET_A_EVENTS closed-set tuple from the domain layer
-  // (source of truth) and asserts that the corresponding
+test("PAYL-01: every dispatchable event has a translator module exporting `translate`", async () => {
+  // Iterates the DISPATCHABLE_EVENTS closed-set tuple from the domain
+  // layer (source of truth) and asserts that the corresponding
   // bridges/hooks/payloads/<kebab>.ts file exists and exports a
-  // `translate` function. Adding a ninth event to BUCKET_A_EVENTS
-  // without a matching translator file fails this block before any
-  // dispatch-path bug appears.
-  assert.equal(BUCKET_A_EVENTS.length, 8, "v1.13 ships exactly 8 bucket-A events");
+  // `translate` function. Adding a dispatchable event to
+  // DISPATCHABLE_EVENTS without a matching translator file fails this
+  // block before any dispatch-path bug appears.
+  assert.equal(DISPATCHABLE_EVENTS.length, 10, "the dispatchable subset has exactly 10 events");
+
+  // ADMIT-01 / D-87-04: the admission tuple and the dispatchable subset are
+  // separate key domains, retained as distinct types even though they now
+  // hold the same members -- Stop / StopFailure are folded into dispatch and
+  // driven off agent_settled. Pin both lengths independently so a future
+  // admission that outruns its translator red-fails here.
+  assert.equal(BUCKET_A_EVENTS.length, 10, "the admission tuple has exactly 10 events");
 
   // Local-mirror equality: catch a drift between the upstream tuple and
   // the kebab map maintained in this file.
   assert.deepEqual(
-    [...BUCKET_A_EVENTS].sort(),
-    [...LOCAL_BUCKET_A].sort(),
-    "LOCAL_BUCKET_A must match BUCKET_A_EVENTS exactly",
+    [...DISPATCHABLE_EVENTS].sort(),
+    [...LOCAL_DISPATCHABLE].sort(),
+    "LOCAL_DISPATCHABLE must match DISPATCHABLE_EVENTS exactly",
   );
 
-  for (const event of BUCKET_A_EVENTS) {
+  for (const event of DISPATCHABLE_EVENTS) {
     const mod = await loadTranslator(event);
     assert.equal(
       typeof mod.translate,
@@ -202,7 +221,7 @@ test("PAYL-01: each translator emits byte-equal JSON for its round-trip fixture"
   // shared TranslationContext + a locked expected JSON string. Catches
   // a field drop / rename / reordering at the architecture-test level
   // (not just per-translator unit level).
-  for (const event of BUCKET_A_EVENTS) {
+  for (const event of DISPATCHABLE_EVENTS) {
     const mod = await loadTranslator(event);
     const piEvent = EVENT_FIXTURES[event];
     const actual = mod.translate(piEvent, ctx);

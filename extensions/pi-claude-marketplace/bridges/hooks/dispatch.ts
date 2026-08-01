@@ -39,6 +39,8 @@
 // compatible because DISP-04 pins sequential ordering, not
 // every-entry-must-run.
 
+import { hookDebugLog } from "../../shared/debug-log.ts";
+
 import { dispatchHookExec } from "./dispatch-exec.ts";
 import {
   adaptInputResult,
@@ -51,7 +53,7 @@ import { currentEpoch, getRoutingBucket, type RoutingEntry } from "./event-route
 import { assertNever, type HookExecResult } from "./exec-result.ts";
 import { ifFires } from "./if-field/index.ts";
 
-import type { BucketAEvent } from "../../domain/components/hook-events.ts";
+import type { BucketAEvent, DispatchableEvent } from "../../domain/components/hook-events.ts";
 import type { ParsedMatcher } from "../../domain/components/hooks.ts";
 import type {
   ExtensionAPI,
@@ -132,15 +134,16 @@ function matcherFiresOnToolEvent(matcher: ParsedMatcher, toolName: string): bool
 }
 
 /**
- * SessionStart matcher-fires predicate. The parser already narrows the
- * closed set to `{startup, resume}` at parse time, so by the time an
- * entry lands in the SessionStart bucket the rawMatcher is one of `""`,
- * `"*"`, `"startup"`, `"resume"`. Match-all admits every reason; a
- * literal-token matcher fires only on equality.
+ * Closed-set matcher-fires predicate shared by the SessionStart composite
+ * path and the settle-time StopFailure path. The parser admits only
+ * match-all (`""` / `"*"`) and exact members of the per-event closed set at
+ * parse time, so dispatch-time filtering is literal equality against the
+ * event's runtime value (the SessionStart `reason`; the classified
+ * StopFailure error type).
  */
-function matcherFiresOnSessionStart(entry: RoutingEntry, reason: string): boolean {
+export function matcherFiresOnClosedSetValue(entry: RoutingEntry, value: string): boolean {
   const raw = entry.rawMatcher;
-  return raw === "" || raw === "*" || raw === reason;
+  return raw === "" || raw === "*" || raw === value;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -228,9 +231,82 @@ async function reduceBucket(
   return { result: finalResult, attributedTo };
 }
 
+/**
+ * One collected outcome from `collectBucketOutcomes`: the entry that ran and
+ * the `HookExecResult` it produced.
+ */
+export interface BucketOutcome {
+  readonly entry: RoutingEntry;
+  readonly result: HookExecResult;
+}
+
+/**
+ * Run EVERY matching entry in the bucket and collect each entry's outcome
+ * WITHOUT the first-block/stop short-circuit `reduceBucket` applies. The
+ * settle Stop path needs every hook's outcome to honor D-88-05 aggregate
+ * precedence: any `continue:false` (stop) among the group suppresses re-entry
+ * regardless of another hook's block, which a short-circuited reduce cannot
+ * express (the short-circuit would return the first block and never observe a
+ * later stop).
+ *
+ * A hook declaring `asyncRewake:true` cannot yield a SYNCHRONOUS decision --
+ * `dispatchHookExec` routes it to the fire-and-forget spawn and returns `noop`
+ * before a decision exists -- so running it here would silently drop its
+ * block/stop desire. Such an entry is degraded to `noop` with a `hookDebugLog`
+ * (rather than a pointless detached spawn) so the dropped decision is
+ * observable. Mutations are NOT applied in place: the settle
+ * synthetic event carries no mutable input/output surface.
+ *
+ * Reuses the same `activeExecutor` seam as `reduceBucket`, so the
+ * `_setExecutorForTest` spy drives this path too.
+ */
+export async function collectBucketOutcomes(
+  bucket: ReadonlyArray<RoutingEntry>,
+  event: unknown,
+  ctx: ExtensionContext,
+  pi: ExtensionAPI | undefined,
+  matcherFires: (entry: RoutingEntry) => boolean,
+): Promise<BucketOutcome[]> {
+  const outcomes: BucketOutcome[] = [];
+  for (const entry of bucket) {
+    if (!matcherFires(entry)) {
+      continue;
+    }
+
+    if (!ifFires(entry.ifPredicate, event, ctx, entry.claudeEvent)) {
+      continue;
+    }
+
+    if (entry.handlerDecl.asyncRewake === true) {
+      hookDebugLog(
+        `collectBucketOutcomes: asyncRewake entry cannot yield a synchronous decision (${entry.pluginId}/${entry.claudeEvent}); degrading to noop`,
+      );
+      outcomes.push({ entry, result: { kind: "noop" } });
+      continue;
+    }
+
+    const result = await activeExecutor(entry, event, ctx, pi);
+    outcomes.push({ entry, result });
+  }
+
+  return outcomes;
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Composite-handler factories
 // ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * The event domain served by `compositeHandlerFor`: every dispatchable
+ * event except the two `tool_result`-routed events (handled by
+ * `toolResultCompositeHandler`) and the two settle-routed events (handled
+ * in `settle.ts`). Declared once so the exclusion set cannot drift between
+ * the factory constraint and its private helpers.
+ */
+type CompositeDispatchEvent = Exclude<
+  DispatchableEvent,
+  "PostToolUse" | "PostToolUseFailure" | "Stop" | "StopFailure"
+>;
 
 /**
  * D-59-01 / D-60-02 / D-60-03: six-uniform composite handler factory.
@@ -246,9 +322,7 @@ async function reduceBucket(
  * `ToolCallEventResult | undefined`; input returns `InputEventResult |
  * undefined`; observation events return `undefined`).
  */
-export function compositeHandlerFor<
-  E extends Exclude<BucketAEvent, "PostToolUse" | "PostToolUseFailure">,
->(
+export function compositeHandlerFor<E extends CompositeDispatchEvent>(
   claudeEvent: E,
   capturedEpoch: number,
   pi?: ExtensionAPI,
@@ -315,7 +389,7 @@ export function toolResultCompositeHandler(
  * and always returns undefined.
  */
 function adaptForEvent(
-  claudeEvent: Exclude<BucketAEvent, "PostToolUse" | "PostToolUseFailure">,
+  claudeEvent: CompositeDispatchEvent,
   reduced: ReducedBucket,
   event: unknown,
 ): ToolCallEventResult | InputEventResult | undefined {
@@ -395,14 +469,14 @@ type CompositeReturnFor<E extends BucketAEvent> = E extends "PreToolUse"
  * already rejects non-empty matchers on those events at parse time.
  */
 function entryFires(
-  claudeEvent: Exclude<BucketAEvent, "PostToolUse" | "PostToolUseFailure">,
+  claudeEvent: CompositeDispatchEvent,
   entry: RoutingEntry,
   event: unknown,
 ): boolean {
   switch (claudeEvent) {
     case "SessionStart": {
       const reason = (event as SessionStartEvent).reason;
-      return matcherFiresOnSessionStart(entry, reason);
+      return matcherFiresOnClosedSetValue(entry, reason);
     }
 
     case "PreToolUse": {

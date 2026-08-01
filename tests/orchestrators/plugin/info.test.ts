@@ -1810,6 +1810,144 @@ test("SURF-01 / D-63-04: available plugin (not-installed) with hooks/hooks.json 
   });
 });
 
+// ---------------------------------------------------------------------------
+// ADMIT-02: `plugin info` lists Stop / StopFailure as SUPPORTED (bare
+// `<event>` non-tool entries, no ` (unsupported)` suffix) once BUCKET_A_MEMBERS
+// contains them. Fixture-backed for both real-wire-byte plugins; a synthetic
+// case pins the StopFailure listing + deterministic Stop-before-StopFailure
+// order (no first-party plugin ships StopFailure, so it is not in a fixture).
+// ---------------------------------------------------------------------------
+
+test("ADMIT-02: ralph-wiggum fixture (Stop-only) lists Stop as a bare supported hook entry", async () => {
+  await withHermeticHome(async ({ home, cwd }) => {
+    const userRoot = path.join(home, ".pi", "agent");
+    const mpRoot = await seedPathMarketplace({
+      scope: "user",
+      scopeRoot: userRoot,
+      cwd,
+      mpName: "mp",
+      manifest: {
+        name: "mp",
+        plugins: [{ name: "ralph", source: "./ralph", version: "1.0.0" }],
+      },
+      installablePluginDirs: ["ralph"],
+    });
+
+    const pluginDir = path.join(mpRoot, "ralph");
+    await mkdir(path.join(pluginDir, "hooks"), { recursive: true });
+    await writeFile(
+      path.join(pluginDir, "hooks", "hooks.json"),
+      await readFile("tests/fixtures/ralph-wiggum-hooks.json", "utf8"),
+      "utf8",
+    );
+
+    const { ctx, pi, notifications } = makeCtx();
+    await getPluginInfo({ ctx, pi, marketplace: "mp", plugin: "ralph", scope: "user", cwd });
+    assert.equal(notifications.length, 1);
+    assert.equal(
+      notifications[0]!.message,
+      [
+        "● mp [user] <no autoupdate>",
+        "  ○ ralph v1.0.0 (available)",
+        "    hooks:",
+        "      Stop",
+      ].join("\n"),
+    );
+    assert.doesNotMatch(notifications[0]!.message, /Stop \(unsupported\)/);
+  });
+});
+
+test("ADMIT-02: hookify fixture (Stop + bucket-A events) lists Stop supported alongside the other arms", async () => {
+  await withHermeticHome(async ({ home, cwd }) => {
+    const userRoot = path.join(home, ".pi", "agent");
+    const mpRoot = await seedPathMarketplace({
+      scope: "user",
+      scopeRoot: userRoot,
+      cwd,
+      mpName: "mp",
+      manifest: {
+        name: "mp",
+        plugins: [{ name: "hookify", source: "./hookify", version: "1.0.0" }],
+      },
+      installablePluginDirs: ["hookify"],
+    });
+
+    const pluginDir = path.join(mpRoot, "hookify");
+    await mkdir(path.join(pluginDir, "hooks"), { recursive: true });
+    await writeFile(
+      path.join(pluginDir, "hooks", "hooks.json"),
+      await readFile("tests/fixtures/hookify-hooks.json", "utf8"),
+      "utf8",
+    );
+
+    const { ctx, pi, notifications } = makeCtx();
+    await getPluginInfo({ ctx, pi, marketplace: "mp", plugin: "hookify", scope: "user", cwd });
+    assert.equal(notifications.length, 1);
+    // Declaration order from the fixture is preserved end-to-end. The two
+    // matcher-less tool arms render `<event>()`; Stop and UserPromptSubmit are
+    // non-tool events and render bare -- Stop with NO ` (unsupported)` suffix.
+    assert.equal(
+      notifications[0]!.message,
+      [
+        "● mp [user] <no autoupdate>",
+        "  ○ hookify v1.0.0 (available)",
+        "    hooks:",
+        "      PreToolUse()",
+        "      PostToolUse()",
+        "      Stop",
+        "      UserPromptSubmit",
+      ].join("\n"),
+    );
+    assert.doesNotMatch(notifications[0]!.message, /Stop \(unsupported\)/);
+  });
+});
+
+test("ADMIT-02: a config declaring Stop + StopFailure lists both bare-supported in declaration order", async () => {
+  await withHermeticHome(async ({ home, cwd }) => {
+    const userRoot = path.join(home, ".pi", "agent");
+    const mpRoot = await seedPathMarketplace({
+      scope: "user",
+      scopeRoot: userRoot,
+      cwd,
+      mpName: "mp",
+      manifest: {
+        name: "mp",
+        plugins: [{ name: "sf", source: "./sf", version: "1.0.0" }],
+      },
+      installablePluginDirs: ["sf"],
+    });
+
+    const pluginDir = path.join(mpRoot, "sf");
+    await mkdir(path.join(pluginDir, "hooks"), { recursive: true });
+    // Both are non-tool events with match-all (no-matcher) groups, so both are
+    // admitted and render as bare supported entries. No first-party plugin
+    // ships StopFailure, so this synthetic config pins its supported listing.
+    await writeFile(
+      path.join(pluginDir, "hooks", "hooks.json"),
+      JSON.stringify({
+        Stop: [{ hooks: [{ type: "command", command: "echo stop" }] }],
+        StopFailure: [{ hooks: [{ type: "command", command: "echo stop-failure" }] }],
+      }),
+      "utf8",
+    );
+
+    const { ctx, pi, notifications } = makeCtx();
+    await getPluginInfo({ ctx, pi, marketplace: "mp", plugin: "sf", scope: "user", cwd });
+    assert.equal(notifications.length, 1);
+    assert.equal(
+      notifications[0]!.message,
+      [
+        "● mp [user] <no autoupdate>",
+        "  ○ sf v1.0.0 (available)",
+        "    hooks:",
+        "      Stop",
+        "      StopFailure",
+      ].join("\n"),
+    );
+    assert.doesNotMatch(notifications[0]!.message, /\(unsupported\)/);
+  });
+});
+
 test("SURF-01 / Open Question 3: hooks/hooks.json deleted between resolve and info-render surfaces probe-classifier reason via narrowProbeError (POSIX)", async (t) => {
   if (process.platform === "win32") {
     t.skip("chmod-based EACCES fault injection is POSIX-only");
@@ -2130,7 +2268,7 @@ test("INFO-05: composeResolvedComponents throw on the installed arm falls back t
 // row resolves `unsupported`, so it renders the de-collapsed `⊖` token).
 // ---------------------------------------------------------------------------
 
-test("INFO-05: lenient reader lists `Stop (unsupported)` on a path-resolvable `(partially-available) {unsupported hooks}` row", async () => {
+test("INFO-05: lenient reader lists `Notification (unsupported)` on a path-resolvable `(partially-available) {unsupported hooks}` row", async () => {
   await withHermeticHome(async ({ home, cwd }) => {
     const userRoot = path.join(home, ".pi", "agent");
     const mpRoot = await seedPathMarketplace({
@@ -2145,17 +2283,17 @@ test("INFO-05: lenient reader lists `Stop (unsupported)` on a path-resolvable `(
       installablePluginDirs: ["ralph"],
     });
 
-    // ralph-loop fixture shape: a single top-level `Stop` event, which is
-    // not in BUCKET_A_EVENTS. The partition filters it to the EMPTY subset
+    // A single top-level `Notification` event, which is not in
+    // BUCKET_A_EVENTS. The partition filters it to the EMPTY subset
     // (Q2), so the plugin resolves `unsupported` WITHOUT recording
     // `hooksConfigPath` -- info therefore routes to the lenient reader, which
-    // still enumerates `Stop (unsupported)` from the source file.
+    // still enumerates `Notification (unsupported)` from the source file.
     const pluginDir = path.join(mpRoot, "ralph");
     await mkdir(path.join(pluginDir, "hooks"), { recursive: true });
     await writeFile(
       path.join(pluginDir, "hooks", "hooks.json"),
       JSON.stringify({
-        hooks: { Stop: [{ hooks: [{ type: "command", command: "echo stop" }] }] },
+        hooks: { Notification: [{ hooks: [{ type: "command", command: "echo notification" }] }] },
       }),
       "utf8",
     );
@@ -2165,12 +2303,12 @@ test("INFO-05: lenient reader lists `Stop (unsupported)` on a path-resolvable `(
     assert.equal(notifications.length, 1);
     const msg = notifications[0]!.message;
     assert.match(msg, /\(partially-available\) \{unsupported hooks\}/);
-    // The hooks: block lists Stop with the (unsupported) suffix.
-    assert.match(msg, /\n {4}hooks:\n {6}Stop \(unsupported\)/);
+    // The hooks: block lists Notification with the (unsupported) suffix.
+    assert.match(msg, /\n {4}hooks:\n {6}Notification \(unsupported\)/);
   });
 });
 
-test("PHOOK-05 / D-71-05: strict reader lists the kept `PostToolUse(Bash)` group plus the dropped `Stop (unsupported)` on a mixed force-degradable row", async () => {
+test("PHOOK-05 / D-71-05: strict reader lists the kept `PostToolUse(Bash)` group plus the dropped `Notification (unsupported)` on a mixed force-degradable row", async () => {
   await withHermeticHome(async ({ home, cwd }) => {
     const userRoot = path.join(home, ".pi", "agent");
     const mpRoot = await seedPathMarketplace({
@@ -2185,12 +2323,13 @@ test("PHOOK-05 / D-71-05: strict reader lists the kept `PostToolUse(Bash)` group
       installablePluginDirs: ["mixed"],
     });
 
-    // Mixed shape: PostToolUse (bucket-A, with a matcher) + Stop
+    // Mixed shape: PostToolUse (bucket-A, with a matcher) + Notification
     // (non-bucket-A). The partition keeps the supportable PostToolUse(Bash)
-    // group and drops the Stop event, so the plugin resolves `unsupported`
-    // and records `hooksConfigPath`. Info therefore routes to the STRICT
-    // reader, which extracts the matcher (`PostToolUse(Bash)`) and now also
-    // enumerates the dropped Stop event (FSTAT-07 dropped-component detail).
+    // group and drops the Notification event, so the plugin resolves
+    // `unsupported` and records `hooksConfigPath`. Info therefore routes to
+    // the STRICT reader, which extracts the matcher (`PostToolUse(Bash)`) and
+    // now also enumerates the dropped Notification event (FSTAT-07
+    // dropped-component detail).
     const pluginDir = path.join(mpRoot, "mixed");
     await mkdir(path.join(pluginDir, "hooks"), { recursive: true });
     await writeFile(
@@ -2198,7 +2337,7 @@ test("PHOOK-05 / D-71-05: strict reader lists the kept `PostToolUse(Bash)` group
       JSON.stringify({
         hooks: {
           PostToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo p" }] }],
-          Stop: [{ hooks: [{ type: "command", command: "echo s" }] }],
+          Notification: [{ hooks: [{ type: "command", command: "echo s" }] }],
         },
       }),
       "utf8",
@@ -2210,8 +2349,8 @@ test("PHOOK-05 / D-71-05: strict reader lists the kept `PostToolUse(Bash)` group
     const msg = notifications[0]!.message;
     assert.match(msg, /\(partially-available\) \{unsupported hooks\}/);
     // Kept group first (with its matcher, via the strict reader), then the
-    // dropped Stop event carrying the (unsupported) suffix.
-    assert.match(msg, /\n {4}hooks:\n {6}PostToolUse\(Bash\)\n {6}Stop \(unsupported\)/);
+    // dropped Notification event carrying the (unsupported) suffix.
+    assert.match(msg, /\n {4}hooks:\n {6}PostToolUse\(Bash\)\n {6}Notification \(unsupported\)/);
   });
 });
 

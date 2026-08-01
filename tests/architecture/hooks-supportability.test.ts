@@ -4,9 +4,9 @@
 // Each test in this file pins one load-bearing decision that is a
 // single textual diff away from regression:
 //
-//   - BUCKET_A_EVENTS is exactly the 8 documented events in locked
+//   - BUCKET_A_EVENTS is exactly the 10 documented events in locked
 //     order (downstream registration iterates the tuple deterministically;
-//     adding a 9th event or reordering an existing one red-fails CI).
+//     adding another event or reordering an existing one red-fails CI).
 //   - TOOL_EVENTS is the closed 3-tuple subset of bucket-A whose matcher
 //     targets a Claude tool name (catches a future contributor who tries
 //     to add a non-tool event to the tool-events partition).
@@ -36,14 +36,14 @@ import {
 import { partitionHooks } from "../../extensions/pi-claude-marketplace/domain/components/hooks.ts";
 
 // ──────────────────────────────────────────────────────────────────────────
-// Block 1: TOOL-02 bucket-A 8-event tuple (D-58-06)
+// Block 1: ADMIT-01 bucket-A 10-event tuple (D-58-06)
 // ──────────────────────────────────────────────────────────────────────────
 
-test("TOOL-02: BUCKET_A_EVENTS is exactly the 8 documented events in locked order", () => {
-  // Order matters: downstream registration in a later phase iterates the
-  // tuple deterministically. A future contributor who reorders or adds a
-  // 9th event (without going through a CONTEXT.md / ROADMAP amendment)
-  // red-fails this assertion.
+test("ADMIT-01: BUCKET_A_EVENTS is exactly the 10 documented events in locked order", () => {
+  // Order matters: downstream registration iterates the tuple
+  // deterministically. `Stop` / `StopFailure` are the turn-boundary
+  // lifecycle tail appended after `SessionEnd` (ADMIT-01). A future
+  // contributor who reorders or adds another event red-fails this assertion.
   assert.deepEqual(
     [...BUCKET_A_EVENTS],
     [
@@ -55,6 +55,8 @@ test("TOOL-02: BUCKET_A_EVENTS is exactly the 8 documented events in locked orde
       "PreCompact",
       "PostCompact",
       "SessionEnd",
+      "Stop",
+      "StopFailure",
     ],
     "BUCKET_A_EVENTS is a public closed-set contract -- shape and order are locked",
   );
@@ -215,6 +217,56 @@ test("WR-04: every NON_TOOL_EVENT_FIELDS event with a non-null field name has a 
 });
 
 // ──────────────────────────────────────────────────────────────────────────
+// Block 5c: ADMIT-01 / SFAIL-03 Stop + StopFailure matcher dispositions
+// ──────────────────────────────────────────────────────────────────────────
+
+test("ADMIT-01: Stop carries the null no-matcher sentinel and is omitted from the closed sets", () => {
+  // Stop has no upstream matcher support -- same disposition as
+  // UserPromptSubmit: null in NON_TOOL_EVENT_FIELDS, absent from
+  // NON_TOOL_EVENT_CLOSED_SETS.
+  assert.equal(
+    NON_TOOL_EVENT_FIELDS.Stop,
+    null,
+    "Stop has no upstream matcher support -- null sentinel marks the disposition",
+  );
+  assert.ok(
+    !("Stop" in NON_TOOL_EVENT_CLOSED_SETS),
+    "Stop must NOT have a closed-set entry -- the null sentinel is the disposition",
+  );
+});
+
+test("SFAIL-03: StopFailure has a non-null field and a closed set of exactly the 10 error-type values", () => {
+  // StopFailure matches against a closed error-type vocabulary: a non-null
+  // field label in NON_TOOL_EVENT_FIELDS and the exact 10-value set in
+  // NON_TOOL_EVENT_CLOSED_SETS (WR-04: both tables land together).
+  assert.notEqual(
+    NON_TOOL_EVENT_FIELDS.StopFailure,
+    null,
+    "StopFailure takes a matcher value -- its field label must be non-null",
+  );
+
+  const stopFailureAllowed = NON_TOOL_EVENT_CLOSED_SETS.StopFailure;
+  assert.ok(stopFailureAllowed !== undefined, "StopFailure must have a closed-set entry");
+  assert.equal(stopFailureAllowed.size, 10, "StopFailure closed set has exactly 10 values");
+  assert.deepEqual(
+    [...stopFailureAllowed].sort(),
+    [
+      "authentication_failed",
+      "billing_error",
+      "invalid_request",
+      "max_output_tokens",
+      "model_not_found",
+      "oauth_org_not_allowed",
+      "overloaded",
+      "rate_limit",
+      "server_error",
+      "unknown",
+    ],
+    "StopFailure admissible values must be the closed 10-value error-type vocabulary",
+  );
+});
+
+// ──────────────────────────────────────────────────────────────────────────
 // Block 6: PHOOK-01 partitionHooks DroppedHook discriminant contract
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -245,10 +297,10 @@ test("PHOOK-01: partitionHooks maps each unsupportable matcher to its DroppedHoo
 
   // (c) non-bucket-A event -> kind:"event".
   const nonBucketA = partitionHooks({
-    Stop: [{ matcher: "", hooks: [{ type: "command", command: "/bin/false" }] }],
+    Notification: [{ matcher: "", hooks: [{ type: "command", command: "/bin/false" }] }],
   });
   assert.deepEqual(nonBucketA.supported, {});
-  assert.deepEqual(nonBucketA.dropped, [{ kind: "event", event: "Stop" }]);
+  assert.deepEqual(nonBucketA.dropped, [{ kind: "event", event: "Notification" }]);
 
   // (c) no-matcher-support -> kind:"group", cond:"no-matcher-support".
   const noMatcher = partitionHooks({

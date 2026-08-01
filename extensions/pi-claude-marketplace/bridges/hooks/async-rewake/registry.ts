@@ -42,6 +42,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { isDispatchableEvent } from "../../../domain/components/hook-events.ts";
 import { hookDebugLog } from "../../../shared/debug-log.ts";
 import { assertNever, errorMessage } from "../../../shared/errors.ts";
 import { notifyAsyncRewakeSummary } from "../../../shared/notify.ts";
@@ -55,6 +56,8 @@ import { translate as translatePreCompact } from "../payloads/pre-compact.ts";
 import { translate as translatePreToolUse } from "../payloads/pre-tool-use.ts";
 import { translate as translateSessionEnd } from "../payloads/session-end.ts";
 import { translate as translateSessionStart } from "../payloads/session-start.ts";
+import { translate as translateStopFailure } from "../payloads/stop-failure.ts";
+import { translate as translateStop } from "../payloads/stop.ts";
 import { translate as translateUserPromptSubmit } from "../payloads/user-prompt-submit.ts";
 import { planSpawn, serializeWithTruncation } from "../spawn-helpers.ts";
 import { buildTranslationContext, type TranslationContext } from "../translation-context.ts";
@@ -62,7 +65,7 @@ import { buildTranslationContext, type TranslationContext } from "../translation
 import { readPidTable, writePidTable, unlinkPidTable, type PidTableEntry } from "./pid-table.ts";
 import { RingBuffer, STDERR_CAP_BYTES, STDOUT_CAP_BYTES } from "./ring-buffer.ts";
 
-import type { BucketAEvent } from "../../../domain/components/hook-events.ts";
+import type { BucketAEvent, DispatchableEvent } from "../../../domain/components/hook-events.ts";
 import type { ScopedLocations } from "../../../persistence/locations.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../../platform/pi-api.ts";
 
@@ -93,7 +96,7 @@ const REWAKE_CUSTOM_TYPE = "claude-hook-rewake" as const;
 // Translator dispatch (PAYL-01 reuse; mirrors dispatch-exec.ts)
 // ──────────────────────────────────────────────────────────────────────────
 
-const TRANSLATORS: Record<BucketAEvent, (event: never, ctx: TranslationContext) => unknown> = {
+const TRANSLATORS: Record<DispatchableEvent, (event: never, ctx: TranslationContext) => unknown> = {
   SessionStart: translateSessionStart,
   UserPromptSubmit: translateUserPromptSubmit,
   PreToolUse: translatePreToolUse,
@@ -102,6 +105,10 @@ const TRANSLATORS: Record<BucketAEvent, (event: never, ctx: TranslationContext) 
   PreCompact: translatePreCompact,
   PostCompact: translatePostCompact,
   SessionEnd: translateSessionEnd,
+  // Stop / StopFailure never take the async-rewake path (they have no async
+  // Pi surface); the entries satisfy the `Record` totality and are inert.
+  Stop: translateStop,
+  StopFailure: translateStopFailure,
 };
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -227,6 +234,18 @@ export async function spawnAndRegister(
   pi: ExtensionAPI,
   loc: ScopedLocations,
 ): Promise<void> {
+  // D-87-04: narrow the admitted event to the dispatchable subset before
+  // indexing the translator table. `Stop` / `StopFailure` never reach this
+  // path -- no Pi event routes them to an async-rewake spawn (their entries in
+  // `TRANSLATORS` above are inert) -- so this arm is a defensive belt
+  // (debug-log + return), not live behavior.
+  if (!isDispatchableEvent(entry.claudeEvent)) {
+    hookDebugLog(
+      `async-rewake: ${entry.claudeEvent} is admitted but not dispatchable (${entry.pluginId}); skipping spawn`,
+    );
+    return;
+  }
+
   try {
     const dispatchId = dispatchIdGenerator();
     const capturedEpoch = currentEpoch();

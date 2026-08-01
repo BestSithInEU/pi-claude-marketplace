@@ -192,6 +192,93 @@ test("HOOK-01: hooks/hooks.json present + parseable -> installable WITH hooks in
   }
 });
 
+// ADMIT-01: a plugin declaring a `Stop` group (match-all matcher) alongside
+// a supported bucket-A event resolves fully `installable` -- Stop is admitted
+// (match-all is always supportable, and Stop carries the null no-matcher
+// sentinel), so there is no `{unsupported hooks}` partition drop. This is the
+// end-to-end admission proof: config -> partitionHooks -> resolver verdict.
+test("ADMIT-01: hooks.json with a match-all Stop group + a supported event -> installable, no Stop drop", async () => {
+  const localRoot = ROOT("./local");
+  const ctx = mockCtx(MP, {
+    [localRoot]: "dir",
+    [path.join(localRoot, "hooks", "hooks.json")]: {
+      contents: JSON.stringify({
+        PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "echo hi" }] }],
+        Stop: [{ matcher: "", hooks: [{ type: "command", command: "echo stop" }] }],
+      }),
+    },
+  });
+  const r = await resolveStrict(basicEntry({ source: "./local" }), ctx);
+  assert.equal(r.state, "installable", `notes if not installable: ${r.notes.join(" / ")}`);
+
+  if (r.state === "installable") {
+    assert.ok(r.supported.includes("hooks"));
+    assert.ok(
+      !r.notes.some((n) => n.includes("unsupported hooks")),
+      `notes must not report unsupported hooks: ${r.notes.join(" / ")}`,
+    );
+  }
+});
+
+// ADMIT-02 (edge: adjacency): the real hookify wire bytes declare `Stop`
+// ALONGSIDE already-supported bucket-A events (PreToolUse, PostToolUse,
+// UserPromptSubmit). Every arm sits in the SAME supported partition -- Stop is
+// not carved into an `{unsupported hooks}` drop -- so the plugin resolves fully
+// `installable` with `hooks` supported and no droppedHooks. Fixture-backed proof
+// (real claude-plugins-official bytes) that growing BUCKET_A_MEMBERS admits Stop
+// with zero new admission code.
+test("ADMIT-02: hookify fixture (Stop + bucket-A events) -> installable, no Stop/StopFailure drop", async () => {
+  const localRoot = ROOT("./local");
+  const ctx = mockCtx(MP, {
+    [localRoot]: "dir",
+    [path.join(localRoot, "hooks", "hooks.json")]: {
+      contents: await fixture("hookify-hooks"),
+    },
+  });
+  const r = await resolveStrict(basicEntry({ source: "./local" }), ctx);
+  assert.equal(r.state, "installable", `notes if not installable: ${r.notes.join(" / ")}`);
+
+  if (r.state === "installable") {
+    assert.ok(r.supported.includes("hooks"), `supported: ${r.supported.join(" / ")}`);
+    assert.equal(r.hooksConfigPath, path.join("hooks", "hooks.json"));
+    // No partition drop for Stop (or any arm): the supported subset retained
+    // everything, so the installable variant carries no droppedHooks.
+    assert.equal(r.droppedHooks, undefined);
+    assert.ok(
+      !r.notes.some((n) => n.includes("unsupported hooks")),
+      `notes must not report unsupported hooks: ${r.notes.join(" / ")}`,
+    );
+  }
+});
+
+// ADMIT-02 (edge: empty): a Stop-only plugin (ralph-wiggum fixture, no other
+// bucket-A event) resolves fully `installable` with a NON-empty supported
+// subset -- `hooks` in supported, hooksConfigPath recorded. This is the
+// counterpoint to the Notification-only empty-subset case below (which drops to
+// `partially-available` with no hooksConfigPath): a Stop-only config is admitted
+// because Stop IS bucket-A, so its subset is non-empty.
+test("ADMIT-02: ralph-wiggum fixture (Stop-only) -> installable with a non-empty supported subset", async () => {
+  const localRoot = ROOT("./local");
+  const ctx = mockCtx(MP, {
+    [localRoot]: "dir",
+    [path.join(localRoot, "hooks", "hooks.json")]: {
+      contents: await fixture("ralph-wiggum-hooks"),
+    },
+  });
+  const r = await resolveStrict(basicEntry({ source: "./local" }), ctx);
+  assert.equal(r.state, "installable", `notes if not installable: ${r.notes.join(" / ")}`);
+
+  if (r.state === "installable") {
+    assert.ok(r.supported.includes("hooks"), `supported: ${r.supported.join(" / ")}`);
+    assert.equal(r.hooksConfigPath, path.join("hooks", "hooks.json"));
+    assert.equal(r.droppedHooks, undefined);
+    assert.ok(
+      !r.notes.some((n) => n.includes("unsupported hooks")),
+      `notes must not report unsupported hooks: ${r.notes.join(" / ")}`,
+    );
+  }
+});
+
 // D-57-04: structurally-malformed hooks/hooks.json flips installable: false
 // with the parse-failure detail surfaced in notes.
 test("D-57-04: hooks/hooks.json present + parse-fails -> notInstallable + parse-detail note", async () => {
@@ -228,17 +315,17 @@ test("D-57-04: hooks/hooks.json with structural-shape mismatch -> notInstallable
 });
 
 // PHOOK-02 / D-71-03: a hooks.json that PARSES but drops a non-bucket-A
-// event (here `Stop`) while keeping a supported group resolves the
+// event (here `Notification`) while keeping a supported group resolves the
 // force-degradable `unsupported` arm, NOT `unavailable`. The kept group still
 // materializes (hooksConfigPath recorded, `"hooks"` in supported) and the
-// dropped `Stop` is enumerated in droppedHooks. `"hooks"` is intentionally a
-// member of BOTH supported and unsupported (dual membership).
-test("PHOOK-02 / D-71-03: hooks.json with a kept group + dropped Stop event -> unsupported", async () => {
+// dropped `Notification` is enumerated in droppedHooks. `"hooks"` is
+// intentionally a member of BOTH supported and unsupported (dual membership).
+test("PHOOK-02 / D-71-03: hooks.json with a kept group + dropped Notification event -> unsupported", async () => {
   const localRoot = ROOT("./local");
   const ctx = mockCtx(MP, {
     [localRoot]: "dir",
     [path.join(localRoot, "hooks", "hooks.json")]: {
-      contents: await fixture("hooks-posttooluse-and-stop"),
+      contents: await fixture("hooks-posttooluse-and-notification"),
     },
   });
   const r = await resolveStrict(basicEntry({ source: "./local" }), ctx);
@@ -248,7 +335,7 @@ test("PHOOK-02 / D-71-03: hooks.json with a kept group + dropped Stop event -> u
     assert.ok(r.unsupported.includes("hooks"), `unsupported: ${r.unsupported.join(" / ")}`);
     assert.ok(r.supported.includes("hooks"), `supported: ${r.supported.join(" / ")}`);
     assert.equal(r.hooksConfigPath, path.join("hooks", "hooks.json"));
-    assert.deepEqual(r.droppedHooks, [{ kind: "event", event: "Stop" }]);
+    assert.deepEqual(r.droppedHooks, [{ kind: "event", event: "Notification" }]);
   }
 });
 
@@ -276,16 +363,16 @@ test("D-71-02: intra-event matcher mix keeps the clean group, drops the regex gr
   }
 });
 
-// D-71-03 / Q2: a Stop-only config filters to the EMPTY subset. It still
-// resolves `unsupported` (droppedHooks recorded) but stages nothing: no
+// D-71-03 / Q2: a Notification-only config filters to the EMPTY subset. It
+// still resolves `unsupported` (droppedHooks recorded) but stages nothing: no
 // hooksConfigPath and `"hooks"` is absent from supported (mirrors the
 // LSP-only precedent where force installs nothing).
-test("D-71-03 / Q2: Stop-only config (empty subset) -> unsupported, no hooksConfigPath, hooks absent from supported", async () => {
+test("D-71-03 / Q2: Notification-only config (empty subset) -> unsupported, no hooksConfigPath, hooks absent from supported", async () => {
   const localRoot = ROOT("./local");
   const ctx = mockCtx(MP, {
     [localRoot]: "dir",
     [path.join(localRoot, "hooks", "hooks.json")]: {
-      contents: await fixture("hooks-stop-only"),
+      contents: await fixture("hooks-notification-only"),
     },
   });
   const r = await resolveStrict(basicEntry({ source: "./local" }), ctx);
@@ -298,7 +385,7 @@ test("D-71-03 / Q2: Stop-only config (empty subset) -> unsupported, no hooksConf
       `supported must omit hooks: ${r.supported.join(" / ")}`,
     );
     assert.equal(r.hooksConfigPath, undefined);
-    assert.deepEqual(r.droppedHooks, [{ kind: "event", event: "Stop" }]);
+    assert.deepEqual(r.droppedHooks, [{ kind: "event", event: "Notification" }]);
   }
 });
 

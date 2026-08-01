@@ -53,6 +53,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
+import { isDispatchableEvent } from "../../domain/components/hook-events.ts";
 import { locationsFor } from "../../persistence/locations.ts";
 import { hookDebugLog } from "../../shared/debug-log.ts";
 import { errorMessage } from "../../shared/errors.ts";
@@ -67,6 +68,8 @@ import { translate as translatePreCompact } from "./payloads/pre-compact.ts";
 import { translate as translatePreToolUse } from "./payloads/pre-tool-use.ts";
 import { translate as translateSessionEnd } from "./payloads/session-end.ts";
 import { translate as translateSessionStart } from "./payloads/session-start.ts";
+import { translate as translateStopFailure } from "./payloads/stop-failure.ts";
+import { translate as translateStop } from "./payloads/stop.ts";
 import { translate as translateUserPromptSubmit } from "./payloads/user-prompt-submit.ts";
 import { planSpawn, serializeWithTruncation } from "./spawn-helpers.ts";
 import { buildTranslationContext, type TranslationContext } from "./translation-context.ts";
@@ -74,7 +77,7 @@ import { parseHookStdout } from "./wire-protocol.ts";
 
 import type { RoutingEntry } from "./event-router.ts";
 import type { HookExecResult } from "./exec-result.ts";
-import type { BucketAEvent } from "../../domain/components/hook-events.ts";
+import type { DispatchableEvent } from "../../domain/components/hook-events.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../platform/pi-api.ts";
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -99,13 +102,15 @@ const STDERR_MAX_BYTES = 64 * 1024;
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
- * Key the 8 per-event translators by `BucketAEvent`. The dispatcher
+ * Key the per-event translators by `DispatchableEvent` (the subset of
+ * `BucketAEvent` whose translators are wired; D-87-04). The dispatcher
  * casts the runtime `event: unknown` to the per-translator argument
  * shape at the call site; each translator's typed signature is
  * preserved at compile time, narrowed by the `entry.claudeEvent`
- * discriminator.
+ * discriminator. `Stop` / `StopFailure` receive the synthetic event the
+ * settle handler assembles rather than a raw Pi event.
  */
-const TRANSLATORS: Record<BucketAEvent, (event: never, ctx: TranslationContext) => unknown> = {
+const TRANSLATORS: Record<DispatchableEvent, (event: never, ctx: TranslationContext) => unknown> = {
   SessionStart: translateSessionStart,
   UserPromptSubmit: translateUserPromptSubmit,
   PreToolUse: translatePreToolUse,
@@ -114,6 +119,8 @@ const TRANSLATORS: Record<BucketAEvent, (event: never, ctx: TranslationContext) 
   PreCompact: translatePreCompact,
   PostCompact: translatePostCompact,
   SessionEnd: translateSessionEnd,
+  Stop: translateStop,
+  StopFailure: translateStopFailure,
 };
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -191,6 +198,18 @@ export async function dispatchHookExec(
     return { kind: "noop" };
   }
 
+  // D-87-04: narrow the admitted `BucketAEvent` to the dispatchable subset
+  // before indexing the translator tables. Every admitted event now has a
+  // translator (`Stop` / `StopFailure` are dispatched here by the settle
+  // handler), so this arm is a defensive belt against a future admission that
+  // outruns its translator -- log + noop rather than a type error.
+  if (!isDispatchableEvent(entry.claudeEvent)) {
+    hookDebugLog(
+      `exec: ${entry.claudeEvent} is admitted but not dispatchable (${entry.pluginId}); noop`,
+    );
+    return { kind: "noop" };
+  }
+
   try {
     const transCtx = buildTranslationContext(ctx);
     const stdinPayload = buildPayload(entry.claudeEvent, event, transCtx);
@@ -218,7 +237,7 @@ export async function dispatchHookExec(
  * probe miss so the never-throws contract is preserved -- the goal is
  * diagnostic, not blocking.
  */
-const REQUIRED_EVENT_FIELDS: Record<BucketAEvent, readonly string[]> = {
+const REQUIRED_EVENT_FIELDS: Record<DispatchableEvent, readonly string[]> = {
   SessionStart: [],
   UserPromptSubmit: ["text"],
   PreToolUse: ["toolName", "input"],
@@ -227,10 +246,12 @@ const REQUIRED_EVENT_FIELDS: Record<BucketAEvent, readonly string[]> = {
   PreCompact: [],
   PostCompact: [],
   SessionEnd: [],
+  Stop: [],
+  StopFailure: [],
 };
 
 function buildPayload(
-  claudeEvent: BucketAEvent,
+  claudeEvent: DispatchableEvent,
   event: unknown,
   transCtx: TranslationContext,
 ): unknown {
