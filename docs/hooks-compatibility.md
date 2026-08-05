@@ -181,17 +181,24 @@ Unmapped Claude tools: `MultiEdit`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Ta
 
 ## Environment variables
 
-| Variable                                              | Claude Code | Pi  | Notes                                                  |
-| ----------------------------------------------------- | ----------- | --- | ------------------------------------------------------ |
-| `CLAUDE_PLUGIN_ROOT`                                  | ✓           | ✓   | absolute path to the installed plugin's root directory |
-| `CLAUDE_PLUGIN_DATA`                                  | ✓           | ✓   | per-plugin, per-scope writable scratch directory       |
-| `CLAUDE_PROJECT_DIR`                                  | ✓           | ✓   | absolute path to the user's project directory          |
-| `CLAUDE_EFFORT`                                       | ✓           | ✗   | Pi has no effort surface                               |
-| `CLAUDE_CODE_REMOTE`                                  | ✓           | ✗   |                                                        |
-| `CLAUDE_ENV_FILE` (sourced before each Bash command)  | ✓           | ✗   |                                                        |
-| `${tool_input.*}` interpolation in `command` / `args` | ✓           | ✗   |                                                        |
-| `${user_config.*}` interpolation                      | ✓           | ✗   | Pi has no plugin user-config surface                   |
-| `$ARGUMENTS` (prompt and agent hooks)                 | ✓           | ✗   | those handler types unsupported                        |
+[`docs/env-vars.md`](env-vars.md) is authoritative on any conflict about which environment variables ship; the table below is the hook-scoped view.
+
+| Variable                                              | Claude Code | Pi  | Notes                                                                                                                                                                                |
+| ----------------------------------------------------- | ----------- | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `CLAUDE_PLUGIN_ROOT`                                  | ✓           | ✓   | absolute path to the installed plugin's root directory                                                                                                                               |
+| `CLAUDE_PLUGIN_DATA`                                  | ✓           | ✓   | per-plugin, per-scope writable scratch directory                                                                                                                                     |
+| `CLAUDE_PROJECT_DIR`                                  | ✓           | ✓   | absolute path to the user's project directory                                                                                                                                        |
+| `CLAUDECODE`                                          | ✓           | ✓   | set to `1` at session start; on both hook lanes                                                                                                                                      |
+| `CLAUDE_CODE_SESSION_ID`                              | ✓           | ✓   | the Pi session id; on both hook lanes                                                                                                                                                |
+| `CLAUDE_SESSION_ID`                                   | --          | ✓   | pi-only alias of the session id; no upstream equivalent                                                                                                                              |
+| `PATH`                                                | ✓           | ✓   | each installed enabled plugin's `<pluginRoot>/bin` is appended; inherited on both hook lanes via the `...process.env` spread                                                         |
+| `PI_CLAUDE_MARKETPLACE_PATH`                          | --          | ✓   | pi-only PATH ledger of the appended plugin `bin` dirs; inherited via the `...process.env` spread; no upstream equivalent                                                             |
+| `CLAUDE_EFFORT`                                       | ✓           | ✗   | Pi has no effort surface                                                                                                                                                             |
+| `CLAUDE_CODE_REMOTE`                                  | ✓           | ✗   |                                                                                                                                                                                      |
+| `CLAUDE_ENV_FILE`                                     | ✓           | ⚠   | path exposed on the SessionStart hook event (both spawn lanes); Pi does not source the file back, so vars a hook writes to it are not applied. See [`docs/env-vars.md`](env-vars.md) |
+| `${tool_input.*}` interpolation in `command` / `args` | ✓           | ✗   |                                                                                                                                                                                      |
+| `${user_config.*}` interpolation                      | ✓           | ✗   | Pi has no plugin user-config surface                                                                                                                                                 |
+| `$ARGUMENTS` (prompt and agent hooks)                 | ✓           | ✗   | those handler types unsupported                                                                                                                                                      |
 
 ## Configuration surfaces
 

@@ -67,6 +67,7 @@ test("SK-1 commitPreparedSkills lands skills at <extensionRoot>/resources/skills
 
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -108,6 +109,7 @@ test("SK-3 prepared SKILL.md frontmatter has rewritten name (acme-knowledge / ac
 
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -141,6 +143,7 @@ test("SK-3 prepared SKILL.md preserves description and license fields", async ()
 
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -167,6 +170,7 @@ test("SK-4 substituted SKILL.md body has no remaining ${CLAUDE_PLUGIN_ROOT} or $
     const pluginDataDir = path.join(locations.dataRoot, "mp", "acme");
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -199,6 +203,7 @@ test("SK-4 substituted SKILL.md contains the resolved pluginRoot path verbatim",
     const pluginDataDir = path.join(locations.dataRoot, "mp", "acme");
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -238,6 +243,7 @@ test("SK-4 / AG-8: a ${CLAUDE_PLUGIN_ROOT} in a body-synthesized description sur
 
       const prepared = await prepareStageSkills({
         locations,
+        cwd: locations.scopeRoot,
         marketplaceName: "mp",
         pluginName: "acme",
         pluginRoot: winPluginRoot,
@@ -273,6 +279,7 @@ test("AS-8 / RN-6 prepareStageSkills returns kind:'noop' when no discovered AND 
 
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -335,6 +342,7 @@ test("commitPreparedSkills removes previous-named target dirs before rename (re-
 
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -367,6 +375,7 @@ test("PRL-10 replacePreparedSkills can rollback to previous skill bytes", async 
 
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -409,6 +418,7 @@ test("PRL-10 finalizeSkillsReplacement removes backups and keeps staged content"
 
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -449,6 +459,7 @@ test("PRL-10 replacePreparedSkills restores backups if an unrelated target block
 
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -477,6 +488,7 @@ test("PRL-10 noop skills replacements rollback and finalize without leaks", asyn
 
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -499,6 +511,7 @@ test("commitPreparedSkills tolerates ENOENT on previous-named target dirs", asyn
 
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -522,6 +535,7 @@ test("abortPreparedSkills cleans up staging dir after partial prepare", async ()
 
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -571,6 +585,7 @@ test("prepareStageSkills surfaces appendLeakToError when a skill source is unrea
       try {
         await prepareStageSkills({
           locations,
+          cwd: locations.scopeRoot,
           marketplaceName: "mp",
           pluginName: "acme",
           pluginRoot: srcRoot,
@@ -608,6 +623,7 @@ test("PRL-10 replacePreparedSkills skips backup when previous skill dir vanished
 
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -643,6 +659,7 @@ test("TR-06 replacePreparedSkills tolerates owned orphan dir from prior partial 
 
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -679,6 +696,7 @@ test("SKILL-01 / PARSE-01 unparseable source frontmatter -> synthesized disable-
 
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -721,6 +739,7 @@ test("NREG-01 valid skill is staged byte-for-byte identical to a name-rewrite + 
     const pluginDataDir = path.join(locations.dataRoot, "mp", "acme");
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot,
@@ -773,6 +792,7 @@ async function stageAugmentSource(
     const resolved = makeResolved("acme", srcRoot, skillsDir);
     const prepared = await prepareStageSkills({
       locations,
+      cwd: locations.scopeRoot,
       marketplaceName: "mp",
       pluginName: "acme",
       pluginRoot: srcRoot,
@@ -949,6 +969,7 @@ test("SKILL-01 lone-CR (\\r-only) unparseable source: the malformed frontmatter 
       const resolved = makeResolved("acme", srcRoot, skillsDir);
       const prepared = await prepareStageSkills({
         locations,
+        cwd: locations.scopeRoot,
         marketplaceName: "mp",
         pluginName: "acme",
         pluginRoot: srcRoot,
@@ -977,6 +998,107 @@ test("SKILL-01 lone-CR (\\r-only) unparseable source: the malformed frontmatter 
       assert.equal(frontmatter["disable-model-invocation"], true);
     } finally {
       await cleanupStaging(srcRoot, "test-cleanup");
+    }
+  });
+});
+
+// SUB-01 / SUB-02: the skills surface consumes BOTH new substitution variables.
+// A source skill whose body carries all four ${CLAUDE_*} tokens proves the
+// end-to-end wiring: skillDir = <skillsTargetDir>/<generatedName>, and
+// projectDir gated on install scope.
+async function withFourTokenSkill<T>(
+  fn: (ctx: { srcRoot: string; skillsDir: string }) => Promise<T>,
+): Promise<T> {
+  const srcRoot = await mkdtemp(path.join(os.tmpdir(), "skills-fourtoken-src-"));
+  try {
+    const skillsDir = path.join(srcRoot, "skills");
+    await mkdir(path.join(skillsDir, "vars"), { recursive: true });
+    await writeFile(
+      path.join(skillsDir, "vars", "SKILL.md"),
+      "---\nname: vars\ndescription: static\n---\n" +
+        "Root: ${CLAUDE_PLUGIN_ROOT}\n" +
+        "Data: ${CLAUDE_PLUGIN_DATA}\n" +
+        "Skill: ${CLAUDE_SKILL_DIR}\n" +
+        "Project: ${CLAUDE_PROJECT_DIR}\n",
+    );
+    return await fn({ srcRoot, skillsDir });
+  } finally {
+    await cleanupStaging(srcRoot, "test-cleanup");
+  }
+}
+
+test("SUB-01/SUB-02 project-scope skill substitutes all four ${CLAUDE_*} tokens", async () => {
+  await withFourTokenSkill(async ({ srcRoot, skillsDir }) => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "skills-proj-scope-"));
+    try {
+      const locations = locationsFor("project", tmp);
+      const pluginDataDir = path.join(locations.dataRoot, "mp", "acme");
+      const prepared = await prepareStageSkills({
+        locations,
+        marketplaceName: "mp",
+        pluginName: "acme",
+        pluginRoot: srcRoot,
+        pluginDataDir,
+        resolved: makeResolved("acme", srcRoot, skillsDir),
+        cwd: tmp,
+      });
+      await commitPreparedSkills(prepared);
+
+      const targetDir = path.join(locations.skillsTargetDir, "acme-vars");
+      const staged = await readFile(path.join(targetDir, "SKILL.md"), "utf8");
+      assert.ok(staged.includes(`Root: ${srcRoot}`), "pluginRoot substituted");
+      assert.ok(staged.includes(`Data: ${pluginDataDir}`), "pluginData substituted");
+      // SUB-01: skillDir resolves to the installed target dir.
+      assert.ok(staged.includes(`Skill: ${targetDir}`), "skillDir substituted");
+      // SUB-02: projectDir resolves to the install cwd for project scope.
+      assert.ok(staged.includes(`Project: ${tmp}`), "projectDir substituted");
+      assert.ok(!staged.includes("${CLAUDE_"), "no ${CLAUDE_*} token remains");
+    } finally {
+      await cleanupStaging(tmp, "test-cleanup");
+    }
+  });
+});
+
+test("SUB-02 user-scope skill keeps ${CLAUDE_PROJECT_DIR} literal; other three substitute", async () => {
+  await withFourTokenSkill(async ({ srcRoot, skillsDir }) => {
+    // User scope ignores cwd and derives scopeRoot from PI_CODING_AGENT_DIR;
+    // relocate it to a tmpdir so the staged writes stay hermetic.
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "skills-user-scope-"));
+    const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = tmp;
+    try {
+      const locations = locationsFor("user", tmp);
+      const pluginDataDir = path.join(locations.dataRoot, "mp", "acme");
+      const prepared = await prepareStageSkills({
+        locations,
+        marketplaceName: "mp",
+        pluginName: "acme",
+        pluginRoot: srcRoot,
+        pluginDataDir,
+        resolved: makeResolved("acme", srcRoot, skillsDir),
+        // A user-scope caller may still supply cwd; the scope gate must ignore it.
+        cwd: tmp,
+      });
+      await commitPreparedSkills(prepared);
+
+      const targetDir = path.join(locations.skillsTargetDir, "acme-vars");
+      const staged = await readFile(path.join(targetDir, "SKILL.md"), "utf8");
+      assert.ok(staged.includes(`Root: ${srcRoot}`), "pluginRoot substituted");
+      assert.ok(staged.includes(`Data: ${pluginDataDir}`), "pluginData substituted");
+      assert.ok(staged.includes(`Skill: ${targetDir}`), "skillDir substituted");
+      // SUB-02 divergence: user scope leaves the token literal.
+      assert.ok(
+        staged.includes("Project: ${CLAUDE_PROJECT_DIR}"),
+        "projectDir stays literal under user scope",
+      );
+    } finally {
+      if (prevAgentDir === undefined) {
+        delete process.env.PI_CODING_AGENT_DIR;
+      } else {
+        process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+      }
+
+      await cleanupStaging(tmp, "test-cleanup");
     }
   });
 });

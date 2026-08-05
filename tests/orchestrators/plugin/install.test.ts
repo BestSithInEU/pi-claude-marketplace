@@ -2249,18 +2249,20 @@ test("classifyEntityShapeError dispatches on kind=not-installable -> unavailable
     await import("../../../extensions/pi-claude-marketplace/shared/errors.ts");
   // The resolver's `r.notes` carry the
   // `"contains <kind>"` prefix (via `addUnsupportedKindNotes`); the
-  // carve-out in `narrowResolverReasons` strips the prefix and routes the
-  // bare token through the shared `narrowUnsupportedKinds` helper.
-  // `contains lspServers` maps to `lsp` (SNM-36 / D-24-04).
+  // `lspServers` carve-out in `narrowResolverReasons` strips the prefix and
+  // routes the bare token through the shared `narrowUnsupportedKinds` helper
+  // -> `lsp` (SNM-36 / D-24-04). The carve-out is arm-independent.
   //
-  // PHOOK-05 / D-71-04: the `hooks` kind is now a force-degradable marker
-  // and renders the single aggregate `unsupported hooks` reason via the SAME
-  // shared helper. A synthetic input mixing `contains hooks` with `contains
-  // lspServers` therefore emits BOTH markers (`unsupported hooks`, `lsp`),
-  // byte-identical to what `list`/`info` derive from the typed `unsupported[]`
-  // list for the same kinds. (`hooks` is not in `UNSUPPORTED_COMPONENT_KINDS`,
-  // so the resolver never emits a real `contains hooks` note -- this synthetic
-  // input pins the shared-helper mapping for cross-surface parity.)
+  // SURF-01 / WR-01 / D-64-07: a `not-installable` shape is the structural
+  // `unavailable` arm (`partialable: false`). A non-carve-out `contains <kind>`
+  // note on that arm stays on the SOURCE axis and renders `unsupported source`,
+  // mirroring `narrowResolverNotes` -- the component-axis `unsupported hooks` /
+  // `unsupported component` markers belong to the partially-available arm only.
+  // (`hooks` is not in `UNSUPPORTED_COMPONENT_KINDS`, so the resolver never
+  // emits a real `contains hooks` note; the force-degradable `hooks` marker
+  // travels on the typed `unsupported[]` list, covered by the IN-02 parity
+  // cases. This synthetic structural note therefore collapses to the source
+  // axis.)
   const err = new PluginShapeError({
     kind: "not-installable",
     plugin: "p",
@@ -2274,7 +2276,7 @@ test("classifyEntityShapeError dispatches on kind=not-installable -> unavailable
   });
   assert.ok(row);
   assert.equal(row.status, "unavailable");
-  assert.deepEqual(row.reasons, ["unsupported hooks", "lsp"]);
+  assert.deepEqual(row.reasons, ["unsupported source", "lsp"]);
 });
 
 test("classifyEntityShapeError dispatches on kind=not-installable with source note -> {unsupported source}", async () => {
@@ -2861,7 +2863,14 @@ test("PHOOK-05 / D-71-04: narrowResolverReasons routes the `contains hooks` toke
   // (`hooks` is not in `UNSUPPORTED_COMPONENT_KINDS`, so the resolver does not
   // emit a real `contains hooks` note; the degradable signal travels on the
   // typed `unsupported[]` list. This pins the shared-helper mapping.)
-  assert.deepEqual([...__test_narrowResolverReasons(["contains hooks"])], ["unsupported hooks"]);
+  //
+  // SURF-01 / D-64-07: the `hooks` kind is force-degradable, so it lives on the
+  // partially-available arm -- pass the arm discriminant (`true`) so the
+  // `contains <kind>` token routes through the component-axis helper.
+  assert.deepEqual(
+    [...__test_narrowResolverReasons(["contains hooks"], ["hooks"], true)],
+    ["unsupported hooks"],
+  );
 });
 
 test("260525-cjr B2 / C5: narrowResolverReasons -> `contains lspServers` extracts the `lspServers` token and emits the `lsp` Reason (SNM-36)", () => {
@@ -2877,19 +2886,20 @@ test("260525-cjr C5: narrowResolverReasons recognises `contains lspServers` as t
   assert.deepEqual([...__test_narrowResolverReasons(["contains lspServers"])], ["lsp"]);
 });
 
-test("260525-cjr C5: narrowResolverReasons ignores `contains <unknown-kind>` (kind not in MANIFEST_FIELD_REASONS)", () => {
+test("260525-cjr C5 / D-90-05: narrowResolverReasons maps `contains <non-carve-out-kind>` to {unsupported component}", () => {
   // Resolver also emits `"contains monitors"`, `"contains themes"`,
-  // etc. for the other UNSUPPORTED_COMPONENT_KINDS members. Those
-  // are NOT in the bare-token carve-out -- the catalog renders them
-  // as `{unsupported source}` per the existing convention. The
-  // helper returns `undefined` for those, and the downstream
-  // `reason.includes("source")` check (or the final fallback) takes
-  // over.
-  const reasons = __test_narrowResolverReasons(["contains monitors"]);
-  // `contains monitors` does NOT contain "source"; falls through to
-  // the final `unsupported source` permissive default (empty-out
-  // guard runs).
-  assert.deepEqual([...reasons], ["unsupported source"]);
+  // etc. for the other UNSUPPORTED_COMPONENT_KINDS members. Those are
+  // NOT the `lspServers` carve-out; their bare token routes through the
+  // SAME `narrowUnsupportedKinds` seam list/info use, so a non-carve-out
+  // component kind renders the truthful `{unsupported component}` marker
+  // (D-90-05) rather than borrowing the source-axis `{unsupported source}`.
+  //
+  // SURF-01 / D-64-07: this component-axis marker belongs to the partially-
+  // available arm, so pass the arm discriminant (`true`); on the structural
+  // `unavailable` arm the same note stays on the source axis (covered by the
+  // cross-surface parity suite).
+  const reasons = __test_narrowResolverReasons(["contains monitors"], ["monitors"], true);
+  assert.deepEqual([...reasons], ["unsupported component"]);
 });
 
 test("260525-cjr B2: narrowResolverReasons -> source-substring -> `unsupported source`", () => {
@@ -3724,7 +3734,7 @@ test("FSTAT-07 / D-66-04: force install of an unsupported plugin emits a (partia
       assert.equal(
         notifications[0]?.message,
         "● mp [project]\n" +
-          "  ◉ p1 v1.0.0 (partially-installed) {unsupported source}\n" +
+          "  ◉ p1 v1.0.0 (partially-installed) {unsupported component}\n" +
           "\n" +
           "/reload to pick up changes",
       );
@@ -3750,7 +3760,7 @@ test("WR-03: a (partially-installed) success row renders soft-dep markers when a
         skills: [{ sourceName: "tool" }],
         agents: [{ sourceName: "bot" }],
         // D-64-06: experimental unsupported kinds drive the force-degradable
-        // `unsupported` arm -> the row is (partially-installed) {unsupported source}.
+        // `unsupported` arm -> the row is (partially-installed) {unsupported component}.
         experimental: { themes: "./themes", monitors: "./monitors.json" },
       });
 
@@ -3774,13 +3784,13 @@ test("WR-03: a (partially-installed) success row renders soft-dep markers when a
       assert.equal(notifications[0]?.severity, "warning", "missing companion -> warning");
       // WR-03: the soft-dep marker shares the brace with the dropped-component
       // reason -- composeReasons appends `{requires pi-subagents}` AFTER the
-      // typed reason (MSG-GR-4), so `unsupported source` leads.
+      // typed reason (MSG-GR-4), so `unsupported component` leads.
       assert.equal(
         notifications[0]?.message,
         "A plugin operation needs attention.\n" +
           "\n" +
           "● mp [project]\n" +
-          "  ◉ p1 v1.0.0 (partially-installed) {unsupported source, requires pi-subagents}\n" +
+          "  ◉ p1 v1.0.0 (partially-installed) {unsupported component, requires pi-subagents}\n" +
           "\n" +
           "/reload to pick up changes",
       );
@@ -4645,6 +4655,159 @@ test("PURL-09 regression: a path-source install keeps its 3-tier ladder version 
       const record = after.marketplaces["mp"]?.plugins["p"];
       assert.equal(record?.version, "3.4.5", "path source keeps the entry.version tier");
       assert.equal(record?.resolvedSha, undefined, "path source records no resolvedSha");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// SUB-02 -- end-to-end ${CLAUDE_PROJECT_DIR} delivery from the orchestrator
+//
+// The bridge unit tests prove each surface substitutes scope-gated projectDir,
+// but the orchestrator threads `cwd` into every stage input by hand (optional
+// field a compiler cannot enforce). These tests install a real fixture whose
+// skill/command/agent bodies carry ${CLAUDE_PROJECT_DIR} and ${CLAUDE_SKILL_DIR}
+// and assert the materialized files, closing the silent-miss gap end-to-end.
+// ───────────────────────────────────────────────────────────────────────────
+
+test("SUB-02: project-scope install substitutes ${CLAUDE_PROJECT_DIR} to the install cwd in skill, command, and agent files; keeps ${CLAUDE_SKILL_DIR} literal in command and agent", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "install-sub02-proj-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      await seedPathMarketplaceWithPlugin({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        marketplaceName: "mp",
+        pluginName: "hello",
+        scope: "project",
+        skills: [{ sourceName: "tool", body: "Project: ${CLAUDE_PROJECT_DIR}\n" }],
+        commands: [
+          {
+            sourceName: "deploy",
+            body: "# deploy\nProject: ${CLAUDE_PROJECT_DIR}\nSkill: ${CLAUDE_SKILL_DIR}\n",
+          },
+        ],
+        agents: [
+          {
+            sourceName: "bot",
+            body: "Project: ${CLAUDE_PROJECT_DIR}\nSkill: ${CLAUDE_SKILL_DIR}\n",
+          },
+        ],
+      });
+
+      const { ctx, pi, notifications } = makeCtx();
+      await installPlugin({ ctx, pi, scope: "project", cwd, marketplace: "mp", plugin: "hello" });
+
+      const errs = notifications.filter((n) => n.severity === "error");
+      assert.equal(errs.length, 0, `unexpected errors: ${JSON.stringify(errs)}`);
+
+      const skillBody = await readFile(
+        path.join(locations.skillsTargetDir, "hello-tool", "SKILL.md"),
+        "utf8",
+      );
+      assert.ok(
+        skillBody.includes(`Project: ${cwd}`),
+        `skill: expected ${cwd} for projectDir, got: ${skillBody}`,
+      );
+      assert.equal(
+        skillBody.includes("${CLAUDE_PROJECT_DIR}"),
+        false,
+        "skill: no remaining ${CLAUDE_PROJECT_DIR}",
+      );
+
+      const commandBody = await readFile(
+        path.join(locations.promptsTargetDir, "hello:deploy.md"),
+        "utf8",
+      );
+      assert.ok(
+        commandBody.includes(`Project: ${cwd}`),
+        `command: expected ${cwd} for projectDir, got: ${commandBody}`,
+      );
+      assert.equal(
+        commandBody.includes("${CLAUDE_PROJECT_DIR}"),
+        false,
+        "command: no remaining ${CLAUDE_PROJECT_DIR}",
+      );
+      // ${CLAUDE_SKILL_DIR} is skill-scoped -- commands receive no skillDir, so
+      // it stays literal.
+      assert.ok(
+        commandBody.includes("Skill: ${CLAUDE_SKILL_DIR}"),
+        "command: expected literal ${CLAUDE_SKILL_DIR}, got: " + commandBody,
+      );
+
+      const agentBody = await readFile(
+        path.join(locations.agentsDir, `${GENERATED_AGENT_PREFIX}hello-bot.md`),
+        "utf8",
+      );
+      assert.ok(
+        agentBody.includes(`Project: ${cwd}`),
+        `agent: expected ${cwd} for projectDir, got: ${agentBody}`,
+      );
+      assert.equal(
+        agentBody.includes("${CLAUDE_PROJECT_DIR}"),
+        false,
+        "agent: no remaining ${CLAUDE_PROJECT_DIR}",
+      );
+      assert.ok(
+        agentBody.includes("Skill: ${CLAUDE_SKILL_DIR}"),
+        "agent: expected literal ${CLAUDE_SKILL_DIR}, got: " + agentBody,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("SUB-02: user-scope install keeps ${CLAUDE_PROJECT_DIR} literal in skill, command, and agent files", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "install-sub02-user-"));
+    try {
+      const locations = locationsFor("user", cwd);
+      await seedPathMarketplaceWithPlugin({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        marketplaceName: "mp",
+        pluginName: "hello",
+        scope: "user",
+        skills: [{ sourceName: "tool", body: "Project: ${CLAUDE_PROJECT_DIR}\n" }],
+        commands: [{ sourceName: "deploy", body: "# deploy\nProject: ${CLAUDE_PROJECT_DIR}\n" }],
+        agents: [{ sourceName: "bot", body: "Project: ${CLAUDE_PROJECT_DIR}\n" }],
+      });
+
+      const { ctx, pi, notifications } = makeCtx();
+      await installPlugin({ ctx, pi, scope: "user", cwd, marketplace: "mp", plugin: "hello" });
+
+      const errs = notifications.filter((n) => n.severity === "error");
+      assert.equal(errs.length, 0, `unexpected errors: ${JSON.stringify(errs)}`);
+
+      const skillBody = await readFile(
+        path.join(locations.skillsTargetDir, "hello-tool", "SKILL.md"),
+        "utf8",
+      );
+      assert.ok(
+        skillBody.includes("Project: ${CLAUDE_PROJECT_DIR}"),
+        "skill: user-scope must keep ${CLAUDE_PROJECT_DIR} literal, got: " + skillBody,
+      );
+
+      const commandBody = await readFile(
+        path.join(locations.promptsTargetDir, "hello:deploy.md"),
+        "utf8",
+      );
+      assert.ok(
+        commandBody.includes("Project: ${CLAUDE_PROJECT_DIR}"),
+        "command: user-scope must keep ${CLAUDE_PROJECT_DIR} literal, got: " + commandBody,
+      );
+
+      const agentBody = await readFile(
+        path.join(locations.agentsDir, `${GENERATED_AGENT_PREFIX}hello-bot.md`),
+        "utf8",
+      );
+      assert.ok(
+        agentBody.includes("Project: ${CLAUDE_PROJECT_DIR}"),
+        "agent: user-scope must keep ${CLAUDE_PROJECT_DIR} literal, got: " + agentBody,
+      );
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

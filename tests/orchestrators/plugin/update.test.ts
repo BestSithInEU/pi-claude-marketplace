@@ -3342,7 +3342,7 @@ test("FORCE-02: --force on a candidate that became unsupported degrades (skill m
       assert.equal(
         notifications[0]?.message,
         "● mp [project]\n" +
-          "  ◉ hello v1.1.0 (partially-installed) {unsupported source}\n" +
+          "  ◉ hello v1.1.0 (partially-installed) {unsupported component}\n" +
           "\n" +
           "/reload to pick up changes",
       );
@@ -3431,12 +3431,13 @@ test("XSURF-03 / SEV-04: bulk update skipping a force-upgradable candidate -> in
       // failures/warnings) renders the cascade BODY (the Phase-73 row +
       // `--force` trailer) AND the never-silent `Plugin update: nothing to
       // update` headline below it -- the summary line does NOT vanish. The
-      // degrade reason `{unsupported source}` is the `makeCandidateUnsupported`
-      // (experimental manifest) form sourced through `narrowUnsupportedKinds`.
+      // degrade reason `{unsupported component}` is the `makeCandidateUnsupported`
+      // (experimental manifest) form sourced through `narrowUnsupportedKinds`
+      // (D-90-05: a non-carve-out component kind renders `unsupported component`).
       assert.equal(
         body,
         "● mp [project]\n" +
-          "  ● hello v1.0.0 (partially-upgradable) {unsupported source}\n" +
+          "  ● hello v1.0.0 (partially-upgradable) {unsupported component}\n" +
           "    Re-run with --partial to update with the supported components.\n" +
           "\n" +
           "Plugin update: nothing to update",
@@ -4381,6 +4382,206 @@ test("NFR-3 device-flow auth failure: a clone throw shaped UserCanceledError cla
         /\{no longer installable\}/,
         "an auth failure must NOT render the lying no-longer-installable reason",
       );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// SUB-02 -- end-to-end ${CLAUDE_PROJECT_DIR} delivery through the update path
+//
+// update's prepareUpdateHandles threads `cwd` into every stage input by hand
+// (an optional field the compiler cannot enforce). A refactor that drops the
+// `cwd` line would compile, pass the rest of the suite, and silently ship
+// un-substituted project dirs on the update path. This test seeds a
+// project-scope fixture whose skill/command/agent bodies carry
+// ${CLAUDE_PROJECT_DIR} and ${CLAUDE_SKILL_DIR}, updates to a new version, and
+// asserts the re-staged files -- closing the silent-miss gap end-to-end.
+// ───────────────────────────────────────────────────────────────────────────
+
+test("SUB-02: project-scope update substitutes ${CLAUDE_PROJECT_DIR} to the install cwd in skill, command, and agent files; keeps ${CLAUDE_SKILL_DIR} literal in command and agent", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "update-sub02-proj-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      const seeded = await seedPathMarketplace({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        marketplaceName: "mp",
+        manifestPlugins: {
+          hello: { version: "1.0.1", hasSkill: true, hasCommand: true, hasAgent: true },
+        },
+        installedVersions: { hello: "1.0.0" },
+      });
+
+      // Overwrite the seeded plugin source with token-bearing bodies so the
+      // update re-stages content that exercises ${CLAUDE_PROJECT_DIR} and
+      // ${CLAUDE_SKILL_DIR} substitution. The first materialization is the
+      // update itself (seedPathMarketplace only seeds a state record).
+      const pluginRoot = path.join(seeded.marketplaceRoot, "plugins", "hello");
+      await writeFile(
+        path.join(pluginRoot, "skills", "tool", "SKILL.md"),
+        "---\nname: tool\n---\n\nProject: ${CLAUDE_PROJECT_DIR}\n",
+      );
+      await writeFile(
+        path.join(pluginRoot, "commands", "deploy.md"),
+        "# deploy\n\nProject: ${CLAUDE_PROJECT_DIR}\nSkill: ${CLAUDE_SKILL_DIR}\n",
+      );
+      await writeFile(
+        path.join(pluginRoot, "agents", "bot.md"),
+        "---\nname: bot\ntools: Read,Grep\n---\n\nProject: ${CLAUDE_PROJECT_DIR}\nSkill: ${CLAUDE_SKILL_DIR}\n",
+      );
+
+      const { ctx, pi, notifications } = makeCtx();
+      await updatePlugins({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        target: { kind: "plugin", plugin: "hello", marketplace: "mp" },
+      });
+
+      const errs = notifications.filter((n) => n.severity === "error");
+      assert.equal(errs.length, 0, `unexpected errors: ${JSON.stringify(errs)}`);
+
+      const skillBody = await readFile(
+        path.join(locations.skillsTargetDir, "hello-tool", "SKILL.md"),
+        "utf8",
+      );
+      assert.ok(
+        skillBody.includes(`Project: ${cwd}`),
+        `skill: expected ${cwd} for projectDir, got: ${skillBody}`,
+      );
+      assert.equal(
+        skillBody.includes("${CLAUDE_PROJECT_DIR}"),
+        false,
+        "skill: no remaining ${CLAUDE_PROJECT_DIR}",
+      );
+
+      const commandBody = await readFile(
+        path.join(locations.promptsTargetDir, "hello:deploy.md"),
+        "utf8",
+      );
+      assert.ok(
+        commandBody.includes(`Project: ${cwd}`),
+        `command: expected ${cwd} for projectDir, got: ${commandBody}`,
+      );
+      assert.equal(
+        commandBody.includes("${CLAUDE_PROJECT_DIR}"),
+        false,
+        "command: no remaining ${CLAUDE_PROJECT_DIR}",
+      );
+      // ${CLAUDE_SKILL_DIR} is skill-scoped -- commands receive no skillDir, so
+      // it stays literal.
+      assert.ok(
+        commandBody.includes("Skill: ${CLAUDE_SKILL_DIR}"),
+        "command: expected literal ${CLAUDE_SKILL_DIR}, got: " + commandBody,
+      );
+
+      const agentBody = await readFile(
+        path.join(locations.agentsDir, `${GENERATED_AGENT_PREFIX}hello-bot.md`),
+        "utf8",
+      );
+      assert.ok(
+        agentBody.includes(`Project: ${cwd}`),
+        `agent: expected ${cwd} for projectDir, got: ${agentBody}`,
+      );
+      assert.equal(
+        agentBody.includes("${CLAUDE_PROJECT_DIR}"),
+        false,
+        "agent: no remaining ${CLAUDE_PROJECT_DIR}",
+      );
+      assert.ok(
+        agentBody.includes("Skill: ${CLAUDE_SKILL_DIR}"),
+        "agent: expected literal ${CLAUDE_SKILL_DIR}, got: " + agentBody,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("MENV-04: project-scope update re-derives ${CLAUDE_PLUGIN_ROOT} in mcp.json when the plugin root changes", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "update-menv04-proj-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      const seeded = await seedPathMarketplace({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        marketplaceName: "mp",
+        manifestPlugins: {
+          hello: {
+            version: "1.0.1",
+            hasMcp: true,
+            rawSourceOverride: "./plugins/hello-OLDROOT",
+          },
+        },
+        installedVersions: { hello: "1.0.0" },
+      });
+
+      // Relocate the seeded plugin tree to the distinctively-named root the
+      // manifest entry points at, and give its .mcp.json a
+      // ${CLAUDE_PLUGIN_ROOT}-bearing command + args. The first
+      // materialization is the update itself (seedPathMarketplace only seeds
+      // a state record).
+      const oldRoot = path.join(seeded.marketplaceRoot, "plugins", "hello-OLDROOT");
+      await cp(path.join(seeded.marketplaceRoot, "plugins", "hello"), oldRoot, {
+        recursive: true,
+      });
+      const mcpSource = JSON.stringify({
+        mcpServers: {
+          server1: {
+            command: "${CLAUDE_PLUGIN_ROOT}/bin/server",
+            args: ["${CLAUDE_PLUGIN_ROOT}/lib"],
+          },
+        },
+      });
+      await writeFile(path.join(oldRoot, ".mcp.json"), mcpSource);
+
+      const first = makeCtx();
+      await updatePlugins({
+        ctx: first.ctx,
+        pi: first.pi,
+        scope: "project",
+        cwd,
+        target: { kind: "plugin", plugin: "hello", marketplace: "mp" },
+      });
+      const firstErrs = first.notifications.filter((n) => n.severity === "error");
+      assert.equal(firstErrs.length, 0, `unexpected errors: ${JSON.stringify(firstErrs)}`);
+      const afterFirst = await readFile(locations.mcpJsonPath, "utf8");
+      assert.ok(afterFirst.includes(oldRoot), "first update materializes the old root");
+
+      // Swap the source dir: copy the tree to a new root, bump its version,
+      // and point the manifest entry at it -- the plugin root CHANGES.
+      const newRoot = path.join(seeded.marketplaceRoot, "plugins", "hello-NEWROOT");
+      await cp(oldRoot, newRoot, { recursive: true });
+      await writeFile(
+        path.join(newRoot, ".claude-plugin", "plugin.json"),
+        JSON.stringify({ name: "hello", version: "1.0.2" }),
+      );
+      await rewriteManifest(seeded.manifestPath, "mp", {
+        hello: { version: "1.0.2", rawSourceOverride: "./plugins/hello-NEWROOT" },
+      });
+
+      const second = makeCtx();
+      await updatePlugins({
+        ctx: second.ctx,
+        pi: second.pi,
+        scope: "project",
+        cwd,
+        target: { kind: "plugin", plugin: "hello", marketplace: "mp" },
+      });
+      const secondErrs = second.notifications.filter((n) => n.severity === "error");
+      assert.equal(secondErrs.length, 0, `unexpected errors: ${JSON.stringify(secondErrs)}`);
+
+      // Substitution re-derives from the resolver's source, never from a
+      // read-back of the prior mcp.json: the new root lands and no substring
+      // of the old root survives anywhere in the raw file bytes.
+      const onDisk = await readFile(locations.mcpJsonPath, "utf8");
+      assert.ok(onDisk.includes(newRoot), "new root must be present");
+      assert.equal(onDisk.includes("OLDROOT"), false, "no substring of the old root may survive");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

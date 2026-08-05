@@ -39,6 +39,12 @@ const PARITY_CASES = [
     expected: "unsupported hooks",
   },
   { note: "contains lspServers", expected: "lsp" },
+  // SURF-01 / WR-01 / D-64-07: on the structural `unavailable` arm a
+  // `contains <non-carve-out-kind>` note stays on the source/note axis and
+  // renders `unsupported source` on BOTH surfaces. install must mirror
+  // `narrowResolverNotes`'s permissive catch-all here, not leak the
+  // component-axis `unsupported component` token onto the structural arm.
+  { note: "contains monitors", expected: "unsupported source" },
   // CR-01 / MCPR-03 / D-02: a broken `mcpServers` string reference must render
   // `{malformed mcp}` on BOTH the read-only probe surface and the install
   // failure surface. Locks the install-side mirror arm against drift.
@@ -68,6 +74,29 @@ for (const { note, expected } of PARITY_CASES) {
   });
 }
 
+// SURF-01 / WR-01 / D-64-07 note-axis agreement on the structural `unavailable`
+// arm: a plugin that is BOTH structurally broken (a malformed `mcpServers`
+// string reference) AND carries a `contains <non-carve-out-kind>` note must
+// render a byte-identical reason set on the read-only note surface
+// (`narrowResolverNotes`) and the install-failure surface (`narrowResolverReasons`
+// with the structural-arm discriminant `partialable === false`). Both route the
+// `contains <kind>` note through the source/note axis -> `unsupported source`;
+// neither emits the component-axis `unsupported component` token, which belongs
+// to the partially-available arm only (D-64-07 structural precedence). Before the
+// arm-aware fix the install surface diverged, rendering `unsupported component`.
+test("SURF-01 / WR-01 structural both-defects plugin renders `unsupported source` on note and install surfaces", () => {
+  const notes = ['malformed mcp reference: file not found: "x.mcp.json"', "contains monitors"];
+  const probeOut = narrowResolverNotes(notes);
+  const installOut = __test_narrowResolverReasons(notes, [], false);
+  assert.deepEqual(probeOut, ["malformed mcp", "unsupported source"]);
+  assert.deepEqual(installOut, ["malformed mcp", "unsupported source"]);
+  assert.deepEqual(
+    probeOut,
+    installOut,
+    "note and install surfaces must be byte-identical on the structural arm",
+  );
+});
+
 // D-64-02 / RSTATE-05 / SURF-01: per-kind unsupported markers must render
 // byte-identically across `list`, `info`, and the `install` error surface for
 // the same unsupported plugin. `list` and `info` derive the marker from the
@@ -84,9 +113,10 @@ const PER_KIND_PARITY_CASES = [
   // HOOK-04 / D-58-02: `lspServers` is the sole non-generic (soft-degradable)
   // per-kind marker and renders as `lsp`.
   { kind: "lspServers", note: "contains lspServers", expected: "lsp" },
-  // Every other unsupported component kind renders the generic marker.
-  { kind: "monitors", note: "contains monitors", expected: "unsupported source" },
-  { kind: "themes", note: "contains themes", expected: "unsupported source" },
+  // D-90-05: every other non-carve-out component kind renders the truthful
+  // `unsupported component` marker (was the generic source-axis token).
+  { kind: "monitors", note: "contains monitors", expected: "unsupported component" },
+  { kind: "themes", note: "contains themes", expected: "unsupported component" },
 ] as const;
 
 for (const { kind, note, expected } of PER_KIND_PARITY_CASES) {
@@ -95,8 +125,9 @@ for (const { kind, note, expected } of PER_KIND_PARITY_CASES) {
     // shared helper (both orchestrators import `narrowUnsupportedKinds`).
     const listInfoOut = narrowUnsupportedKinds([kind]);
     // install error surface derives the marker from the resolver `contains
-    // <kind>` note threaded onto the thrown PluginShapeError's `reasons`.
-    const installOut = __test_narrowResolverReasons([note]);
+    // <kind>` note on the partially-available arm (arm discriminant `true`),
+    // threaded onto the thrown PluginShapeError's `reasons` + typed kinds.
+    const installOut = __test_narrowResolverReasons([note], [kind], true);
     assert.deepEqual(
       listInfoOut,
       [expected],
@@ -121,7 +152,7 @@ for (const { kind, note, expected } of PER_KIND_PARITY_CASES) {
 // for a MULTI-kind `unsupported` plugin, where the install path previously
 // dropped every non-`lspServers` kind once an earlier kind had populated the
 // row -- so `install` rendered `["lsp"]` while `list`/`info` rendered
-// `["lsp","unsupported source"]` for the SAME plugin. This case pairs the typed
+// `["lsp","unsupported component"]` for the SAME plugin. This case pairs the typed
 // kind list (list/info input) against the matching resolver notes (install
 // input) and asserts both surfaces emit a byte-identical multi-marker set.
 test("RSTATE-05 / SURF-01 / D-64-02 multi-kind unsupported markers are byte-identical across list, info, and install", () => {
@@ -129,16 +160,21 @@ test("RSTATE-05 / SURF-01 / D-64-02 multi-kind unsupported markers are byte-iden
   // shared helper.
   const listInfoOut = narrowUnsupportedKinds(["lspServers", "themes"]);
   // install error surface derives markers from the resolver `contains <kind>`
-  // notes threaded onto the thrown PluginShapeError's `reasons`.
-  const installOut = __test_narrowResolverReasons(["contains lspServers", "contains themes"]);
+  // notes on the partially-available arm (arm discriminant `true`), threaded
+  // onto the thrown PluginShapeError's `reasons` + typed kinds.
+  const installOut = __test_narrowResolverReasons(
+    ["contains lspServers", "contains themes"],
+    ["lspServers", "themes"],
+    true,
+  );
   assert.deepEqual(
     listInfoOut,
-    ["lsp", "unsupported source"],
+    ["lsp", "unsupported component"],
     `list/info surface emitted ${JSON.stringify(listInfoOut)}`,
   );
   assert.deepEqual(
     installOut,
-    ["lsp", "unsupported source"],
+    ["lsp", "unsupported component"],
     `install surface emitted ${JSON.stringify(installOut)}`,
   );
   assert.deepEqual(
@@ -215,7 +251,7 @@ test("IN-02 / RSTATE-05: empty notes + empty typed kinds keeps the permissive `u
 // `unsupported hooks` sources are distinct: structural via notes, degradable via
 // the typed kind list. This guard pins that a structural input never sneaks onto
 // the per-kind path -- a `hooks`-free kind list yields only `lsp` / `unsupported
-// source`, never the marker by structural means.
+// component`, never the marker by structural means.
 test("RSTATE-05 / D-64-07 structural hooks reason stays on the notes path, distinct from the degradable per-kind marker", () => {
   const structuralNote =
     "malformed hooks.json: hooks.json failed schema validation: /description: expected array";
@@ -223,10 +259,10 @@ test("RSTATE-05 / D-64-07 structural hooks reason stays on the notes path, disti
   assert.deepEqual(narrowResolverNotes([structuralNote]), ["unsupported hooks"]);
   assert.deepEqual(__test_narrowResolverReasons([structuralNote]), ["unsupported hooks"]);
   // ... while a kind list WITHOUT `hooks` only yields the closed `lsp` /
-  // `unsupported source` family (the degradable `hooks` kind is the sole path to
-  // the per-kind `unsupported hooks` marker, exercised above).
+  // `unsupported component` family (the degradable `hooks` kind is the sole path
+  // to the per-kind `unsupported hooks` marker, exercised above).
   const listOut = narrowUnsupportedKinds(["lspServers", "monitors"]);
-  assert.deepEqual(listOut, ["lsp", "unsupported source"]);
+  assert.deepEqual(listOut, ["lsp", "unsupported component"]);
   assert.ok(
     !listOut.includes("unsupported hooks"),
     "a structural-only kind list must never emit the `unsupported hooks` marker",
