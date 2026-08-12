@@ -34,8 +34,8 @@ import type { CommandContext, RenderFn } from "../../shared/notify-context.ts";
  * The shared presentation vocabulary stays central in `shared/notify.ts` (D-11)
  * and is CALLED here, never duplicated.
  *
- * RLD-04 / D-08: the list surface's steady-state inventory row uses the
- * `installed` status with `needsReload: false` -- the stamped flag carries the
+ * RLD-04: the list surface's steady-state inventory row uses the `installed`
+ * status with `needsReload: false` -- the stamped flag carries the
  * reload-suppression (the OR-reduce reload-hint, RLD-02, never fires on a
  * steady-state list). The former `present` token has been collapsed into
  * `installed`.
@@ -87,11 +87,18 @@ export type ListMsg =
  * is a TS2741 compile error at the `satisfies` site. Arm bodies are
  * byte-identical to the central `renderPluginRow` switch.
  *
- * RLD-04 / D-08: the `installed` inventory arm passes `undefined` for `reasons`
- * so the orphan-rewake brace (an install-cascade surface) never leaks onto a
- * steady-state inventory row. The `available` / `unavailable` arms omit the
- * `[<scope>]` bracket entirely (MSG-PL-6 / SNM-11 carve-out) by passing
- * `undefined` to `renderScopeBracket`.
+ * INV-01: the `installed` inventory arm forwards `p.reasons`. Steady-state
+ * inventory rows may state DURABLE facts about a record's relationship to its
+ * marketplace -- `{not in manifest}` stays true across reloads until either
+ * the manifest or the installation changes -- but not TRANSIENT conditions
+ * tied to a pending action (D-95-02). Under D-95-01 that split is documented
+ * convention for authors of the row builder, not a gate here: this map holds
+ * no allowlist and renders whatever the orchestrator stamped. The absence
+ * claim itself is gated upstream on a SUCCESSFUL manifest read (BOUND-03 /
+ * D-95-05).
+ *
+ * The `available` / `unavailable` arms omit the `[<scope>]` bracket entirely
+ * (MSG-PL-6 / SNM-11 carve-out) by passing `undefined` to `renderScopeBracket`.
  */
 const LIST_RENDER: { [K in ListStatus]: RenderFn<Extract<ListMsg, { status: K }>> } = {
   installed: (p, probe, mpScope) =>
@@ -101,7 +108,7 @@ const LIST_RENDER: { [K in ListStatus]: RenderFn<Extract<ListMsg, { status: K }>
       mpScope,
       renderVersion(p.version),
       "(installed)",
-      undefined,
+      p.reasons,
       probe,
     ),
   available: (p, probe, mpScope) =>
@@ -147,6 +154,12 @@ const LIST_RENDER: { [K in ListStatus]: RenderFn<Extract<ListMsg, { status: K }>
   // clean today -- exactly like the `upgradable` arm above.
   "partially-upgradable": (p, probe, mpScope) =>
     pluginRow(ICON_INSTALLED, p, mpScope, "(partially-upgradable)", probe),
+  // ENBL-16 / D-100-07: the list surface threads the row's `reasons`, and the
+  // orchestrator stamps at most `not in manifest` there. Both soft-dep flags
+  // stay hard-coded false, which is what keeps a disabled row free of a
+  // soft-dep marker whatever inventory the record retained (ENBL-15 /
+  // D-100-06). Body otherwise lifted verbatim from the central
+  // `renderPluginRow` disabled arm.
   disabled: (p, probe, mpScope) =>
     joinTokens([
       ICON_DISABLED,
@@ -154,7 +167,7 @@ const LIST_RENDER: { [K in ListStatus]: RenderFn<Extract<ListMsg, { status: K }>
       renderScopeBracket(p.scope, mpScope),
       renderVersion(p.version),
       "(disabled)",
-      composeReasons(undefined, false, false, probe),
+      composeReasons(p.reasons, false, false, probe),
     ]),
   failed: (p, probe, mpScope) => pluginRow(ICON_UNINSTALLABLE, p, mpScope, "(failed)", probe),
   // RSTA-01 / D-80-03: not-installed git-source row whose clone/mirror is not

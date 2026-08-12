@@ -3401,6 +3401,15 @@ test("WR-03: installPlugin of a hooks-declaring plugin rebuilds the routing tabl
         `expected non-empty hooks resource; got ${JSON.stringify(afterState.marketplaces["mp"]?.plugins["p1"]?.resources)}; notification: ${summary}`,
       );
 
+      // D-100-01 / ENBL-11: the same install also describes the hooks it
+      // materialized. `resources.hooks` names the container slug; this names
+      // the entries, which is what `info` reports once the artifacts are gone.
+      // A tool event carries its matcher (empty string = match-all); no
+      // handler payload is recorded.
+      assert.deepEqual(afterState.marketplaces["mp"]?.plugins["p1"]?.hookEntries, [
+        { event: "PreToolUse", matcher: "" },
+      ]);
+
       // Post-condition: the routing-table now reflects the installed plugin's
       // PreToolUse entry. This proves WR-03's `rebuildRoutingTables()` ran
       // inside the per-plugin lock right after `addPluginConfigToCache`.
@@ -3740,6 +3749,72 @@ test("FSTAT-07 / D-66-04: force install of an unsupported plugin emits a (partia
       );
     } finally {
       await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("WR-03: the installed outcome of a partial install carries the dropped kinds, and a clean install carries none", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "install-wr03-unsupported-"));
+    const cleanCwd = await mkdtemp(path.join(tmpdir(), "install-wr03-clean-"));
+    try {
+      await seedPathMarketplaceWithPlugin({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        marketplaceName: "mp",
+        pluginName: "degraded",
+        pluginVersion: "1.0.0",
+        pluginJsonVersion: "1.0.0",
+        skills: [{ sourceName: "tool" }],
+        experimental: { themes: "./themes", monitors: "./monitors.json" },
+      });
+      await seedPathMarketplaceWithPlugin({
+        cwd: cleanCwd,
+        marketplaceRoot: path.join(cleanCwd, "mp-src"),
+        marketplaceName: "mp",
+        pluginName: "clean",
+        pluginVersion: "1.0.0",
+        pluginJsonVersion: "1.0.0",
+        skills: [{ sourceName: "tool" }],
+      });
+
+      const { ctx, pi } = makeCtx();
+      const degraded = await installPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "degraded",
+        partial: true,
+      });
+
+      // The outcome names what the ledger dropped. Without it an orchestrated
+      // caller has the facts only for a bare `(installed)` row, which would
+      // contradict the `(partially-installed)` row `list` renders for the same
+      // record one command later.
+      assert.ok(degraded.status === "installed");
+      assert.ok(
+        (degraded.unsupported ?? []).length > 0,
+        `the partial install reports its dropped kinds: ${JSON.stringify(degraded.unsupported)}`,
+      );
+
+      const clean = await installPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd: cleanCwd,
+        marketplace: "mp",
+        plugin: "clean",
+      });
+
+      // NREG-01: a clean install omits the field entirely.
+      assert.ok(clean.status === "installed");
+      assert.equal(clean.unsupported, undefined);
+      assert.equal(Object.hasOwn(clean, "unsupported"), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+      await rm(cleanCwd, { recursive: true, force: true });
     }
   });
 });
@@ -4807,6 +4882,68 @@ test("SUB-02: user-scope install keeps ${CLAUDE_PROJECT_DIR} literal in skill, c
       assert.ok(
         agentBody.includes("Project: ${CLAUDE_PROJECT_DIR}"),
         "agent: user-scope must keep ${CLAUDE_PROJECT_DIR} literal, got: " + agentBody,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Rollback arms (D-99-05b): a phase that throws after earlier phases committed
+// must unwind them, and the assertion is on what the unwind left behind.
+// ───────────────────────────────────────────────────────────────────────────
+
+test("PI-15: an mcp phase that cannot run unwinds the hooks bridge and leaves no record", async () => {
+  // The hooks bridge writes its config atomically -- there is no staging dir,
+  // so its undo is a real removal rather than the discard the other bridges
+  // do. Failing the mcp phase (the slot after hooks) is what makes that
+  // removal run; occupying <scopeRoot>/mcp.json with a directory fails the
+  // phase without touching any earlier one.
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "install-hooks-unwind-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      await seedPathMarketplaceWithPlugin({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        marketplaceName: "mp",
+        pluginName: "hello",
+        skills: [{ sourceName: "tool" }],
+        hooksJson: { hooks: { SessionStart: [{ hooks: [{ type: "command", command: "x" }] }] } },
+        mcpServers: { server1: { command: "node", args: ["s.js"] } },
+      });
+
+      await mkdir(locations.mcpJsonPath, { recursive: true });
+
+      const { ctx, pi, notifications } = makeCtx();
+      await installPlugin({ ctx, pi, scope: "project", cwd, marketplace: "mp", plugin: "hello" });
+
+      const allText = notifications.map((n) => n.message).join("\n");
+      assert.match(allText, /⊘ hello v0\.0\.1 \(failed\)/, `no failed row in:\n${allText}`);
+
+      // The unwind is what these assert: nothing the earlier phases wrote may
+      // outlive the failed install, or the next attempt collides with itself.
+      const survives = async (p: string): Promise<boolean> =>
+        stat(p).then(
+          () => true,
+          () => false,
+        );
+      assert.equal(
+        await survives(path.join(locations.hooksDir, "hello", "hooks.json")),
+        false,
+        "the hooks config the hooks phase wrote must be removed by its undo",
+      );
+      assert.equal(
+        await survives(path.join(locations.skillsTargetDir, "hello-tool")),
+        false,
+        "the skills the first phase staged must not survive the failure",
+      );
+      const after = await loadState(locations.extensionRoot);
+      assert.equal(
+        after.marketplaces["mp"]?.plugins["hello"],
+        undefined,
+        "a failed install must write no record",
       );
     } finally {
       await rm(cwd, { recursive: true, force: true });

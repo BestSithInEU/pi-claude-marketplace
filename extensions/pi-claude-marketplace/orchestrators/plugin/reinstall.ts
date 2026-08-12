@@ -62,7 +62,7 @@ import {
   rollbackSkillsReplacement,
 } from "../../bridges/skills/index.ts";
 import { pluginMirrorKey } from "../../domain/clone-key.ts";
-import { parseHooksConfig } from "../../domain/components/hooks.ts";
+import { parseHooksConfig, projectHookSummaryEntries } from "../../domain/components/hooks.ts";
 import { PLUGIN_ENTRY_VALIDATOR, type PluginEntry } from "../../domain/components/plugin.ts";
 import { loadMarketplaceManifest } from "../../domain/manifest.ts";
 import { asAbsolutePluginRoot } from "../../domain/plugin-root.ts";
@@ -86,7 +86,7 @@ import {
   type MarketplaceRows,
   type Plural,
 } from "../../shared/notify-context.ts";
-import { skipSeverity } from "../../shared/notify-reasons.ts";
+import { malformedReasonsForKinds, skipSeverity } from "../../shared/notify-reasons.ts";
 import { compareByNameThenScope, notify } from "../../shared/notify.ts";
 import {
   withLockedStateTransaction,
@@ -104,6 +104,7 @@ import {
   assertNoCrossPluginConflicts,
   MarketplaceNotAddedSignal,
   maybeWritePluginConfigBack,
+  removePluginRecord,
   resolveCrossScopePluginTarget,
   resolveInstalledMarketplaceTarget,
 } from "./shared.ts";
@@ -117,7 +118,9 @@ import type { GitHubSource, GitSubdirSource, UrlSource } from "../../domain/sour
 import type { ScopedLocations } from "../../persistence/locations.ts";
 import type { ExtensionState } from "../../persistence/state-io.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../platform/pi-api.ts";
+import type { HookSummaryEntry } from "../../shared/concerns/hooks.ts";
 import type { Dependency } from "../../shared/concerns/soft-dep.ts";
+import type { DegradeKind } from "../../shared/notify-reasons.ts";
 import type {
   ContentReason,
   PluginFailedMessage,
@@ -337,27 +340,20 @@ export async function reinstallPlugin(
 
   // Single-plugin reinstall success is a 1-row cascade carrying a
   // PluginReinstalledMessage variant; this branch and the bulk-cascade branch
-  // both emit one notify() call with structured payloads. Severity (undefined
-  // / info) + the `/reload to pick up changes` trailer are computed by
-  // notify() -- the `reinstalled` status is in the state-changing variant set,
-  // so the reload-hint always fires here.
+  // both emit one notify() call with structured payloads. The `/reload to pick
+  // up changes` trailer is computed by notify() -- the `reinstalled` status is
+  // in the state-changing variant set, so the reload-hint always fires here.
   //
-  // Per-row scope is OMITTED (orphan-fold) since it matches the
-  // marketplace block's scope on the single-plugin surface.
-  // IN-02: no `version !== ""` defensive spread. `resolvePluginVersion`
-  // always returns a non-empty string. The renderer suppresses the
-  // `v<version>` token on undefined / empty
-  // anyway, so the behavior is preserved against the legacy-state-with-
-  // empty-version case.
-  const reinstalledRow: PluginReinstalledMessage = {
-    status: "reinstalled",
-    name: plugin,
-    dependencies: dependenciesFromOutcome(locked.outcome),
-    version: locked.outcome.version,
-    // D-03/D-06: realized reinstall transition -> info, reloads Pi resources.
-    severity: "info",
-    needsReload: true,
-  };
+  // WR-09: the ONE row composer, shared with the bulk cascade mapper. Two
+  // reinstall surfaces disagreeing about a degrade the same ledger produced is
+  // the drift the shared signal exists to close, so neither surface composes the
+  // row itself -- including its severity, which the composer raises to `warning`
+  // for a degraded component. `undefined` is the orphan-fold scope decision this
+  // branch always makes: the row's scope matches its marketplace block.
+  const reinstalledRow: PluginReinstalledMessage = reinstalledRowFromOutcome(
+    locked.outcome,
+    undefined,
+  );
   notifyWithContext(ctx, pi, REINSTALL_CONTEXT, [
     { name: marketplace, scope, plugins: [reinstalledRow] },
   ]);
@@ -893,6 +889,48 @@ function isManualRecoveryOutcome(
 }
 
 /**
+ * Compose the success row for one reinstalled plugin. The SOLE composer for
+ * that row: the standalone verb and the bulk cascade mapper both call it, so
+ * the two surfaces cannot report the same ledger run differently (WR-09).
+ *
+ * CMC-13: `declaresAgents` / `declaresMcp` are required booleans, mapped to the
+ * `dependencies: Dependency[]` tuple per SNM-06. The renderer's per-row soft-dep
+ * probe fires `{requires pi-subagents}` / `{requires pi-mcp}` when the companion
+ * extension is unloaded.
+ *
+ * WARN-01 / WR-09 / D-86-03: a component this ledger degraded names its kind and
+ * takes the info -> warning raise, exactly as on the install, enable and backfill
+ * arms. `reinstall` was the last ledger-driven verb whose outcome carried the
+ * signal but whose row discarded it -- a bare `(reinstalled)` row over a record
+ * `list` renders as degraded one command later. A clean reinstall composes no
+ * reasons and stays info, so its row is byte-identical to before (NREG-01).
+ *
+ * `rowScope` is the caller's orphan-fold decision: `undefined` suppresses the
+ * `[<scope>]` bracket per `renderScopeBracket`.
+ */
+function reinstalledRowFromOutcome(
+  outcome: ReinstallReinstalledOutcome,
+  rowScope: Scope | undefined,
+): PluginReinstalledMessage {
+  const malformed = malformedReasonsForKinds(outcome.degradedKinds);
+  return {
+    status: "reinstalled",
+    name: outcome.name,
+    dependencies: dependenciesFromOutcome(outcome),
+    // IN-02: the spread is not defensive -- `resolvePluginVersion` always
+    // returns a non-empty string. It keeps a legacy record carrying an empty
+    // version from putting an empty slot in the payload; the renderer suppresses
+    // the `v<version>` token either way.
+    ...(outcome.version !== "" && { version: outcome.version }),
+    ...(rowScope !== undefined && { scope: rowScope }),
+    ...(malformed.length > 0 && { reasons: malformed }),
+    // D-03/D-06: realized reinstall transition -> reloads Pi resources.
+    severity: malformed.length > 0 ? "warning" : "info",
+    needsReload: true,
+  };
+}
+
+/**
  * Map a `ReinstallPluginOutcome` to its `PluginNotificationMessage`
  * representation. The variant set covers `reinstalled` / `skipped` /
  * `failed` / `manual recovery` per the catalog states.
@@ -914,24 +952,8 @@ function outcomeToPluginMessage(
 ): ReinstallMsg {
   const rowScope = outcome.scope === marketplaceScope ? undefined : outcome.scope;
   switch (outcome.partition) {
-    case "reinstalled": {
-      // CMC-13: `declaresAgents` / `declaresMcp` are
-      // required booleans. Map to the `dependencies: Dependency[]`
-      // tuple per SNM-06. The renderer's per-row soft-dep probe
-      // fires `{requires pi-subagents}` / `{requires pi-mcp}` markers
-      // when the companion extension is unloaded.
-      const dependencies = dependenciesFromOutcome(outcome);
-      return {
-        status: "reinstalled",
-        name: outcome.name,
-        dependencies,
-        ...(outcome.version !== "" && { version: outcome.version }),
-        ...(rowScope !== undefined && { scope: rowScope }),
-        // D-03/D-06: realized reinstall transition -> info, reloads Pi resources.
-        severity: "info",
-        needsReload: true,
-      };
-    }
+    case "reinstalled":
+      return reinstalledRowFromOutcome(outcome, rowScope);
 
     case "skipped": {
       const reasons = narrowReasons(outcome.notes);
@@ -1215,7 +1237,7 @@ async function runLockedReinstall(
     oldRecord: oldSnapshot,
     agentsSourceDir: generated.agentsSourceDir,
   });
-  const replacements = await replaceAll(handles, {
+  const { replacements, hookEntries } = await replaceAll(handles, {
     locations,
     cwd,
     plugin,
@@ -1224,7 +1246,15 @@ async function runLockedReinstall(
 
   let invalidConfigWriteBack: boolean;
   try {
-    updateStateRecord(tx.state, marketplace, plugin, oldSnapshot, installable, handles);
+    updateStateRecord(
+      tx.state,
+      marketplace,
+      plugin,
+      oldSnapshot,
+      installable,
+      handles,
+      hookEntries,
+    );
 
     // WB-01 / A7: deep-equal short-circuit preserves RECON-05
     // mtime invariant. Reinstall is invoked by the user (both standalone and
@@ -1548,11 +1578,20 @@ async function prepareAllHandles(input: {
   return handles as PreparedHandles;
 }
 
+/**
+ * D-100-01 / ENBL-10: returns the rollback ledger AND the hook entries
+ * `commitHooks` wrote, because the record composition needs a description of
+ * the hooks it materialized and the hooks slot is the only step that has one.
+ */
 async function replaceAll(
   handles: PreparedHandles,
   hooks: HooksReplaceArgs,
-): Promise<readonly ReplacementEntry[]> {
+): Promise<{
+  readonly replacements: readonly ReplacementEntry[];
+  readonly hookEntries: readonly HookSummaryEntry[] | undefined;
+}> {
   const replacements: ReplacementEntry[] = [];
+  let hookEntries: readonly HookSummaryEntry[] | undefined;
   try {
     const skills = await replacePreparedSkills(handles.skills);
     replacements.push({ phase: "skills", handle: skills });
@@ -1588,7 +1627,7 @@ async function replaceAll(
     // which re-resolves version B (no hooks) and persists the truthful
     // state. The same recovery contract applies to update.ts (see
     // WR-01 documentation there).
-    await commitHooks(hooks);
+    hookEntries = await commitHooks(hooks);
     const mcp = await replacePreparedMcp(handles.mcp);
     replacements.push({ phase: "mcp", handle: mcp });
   } catch (err) {
@@ -1596,7 +1635,7 @@ async function replaceAll(
     throw errorWithManualRecovery(err, leaks);
   }
 
-  return Object.freeze(replacements);
+  return { replacements: Object.freeze(replacements), hookEntries };
 }
 
 interface HooksReplaceArgs {
@@ -1612,12 +1651,19 @@ interface HooksReplaceArgs {
  * on-disk hooks.json (mirroring `install.ts:340-360`) and call writeHookConfig.
  * When the resolved plugin has no hooks, remove any stale subtree (defensive
  * cleanup of an artifact a prior install left behind).
+ *
+ * D-100-01 / D-100-02 / ENBL-11: returns the supported hook entries it wrote,
+ * for the record's `hookEntries`. Returns undefined on the no-hooks branch --
+ * that branch removes the stale subtree rather than writing one, so there is
+ * nothing to describe.
  */
-async function commitHooks(args: HooksReplaceArgs): Promise<void> {
+async function commitHooks(
+  args: HooksReplaceArgs,
+): Promise<readonly HookSummaryEntry[] | undefined> {
   const { locations, cwd, plugin, installable } = args;
   if (installable.hooksConfigPath === undefined) {
     await removeHookConfig({ locations, pluginName: plugin });
-    return;
+    return undefined;
   }
 
   const raw = await readFile(
@@ -1636,6 +1682,9 @@ async function commitHooks(args: HooksReplaceArgs): Promise<void> {
     pluginRoot: installable.pluginRoot,
     hooksValue: parsed.value,
   });
+
+  // `parsed.value` is the supported subset already.
+  return projectHookSummaryEntries(parsed.value);
 }
 
 function updateStateRecord(
@@ -1645,6 +1694,7 @@ function updateStateRecord(
   oldRecord: PluginRecord,
   installable: MaterializablePlugin,
   handles: PreparedHandles,
+  hookEntries: readonly HookSummaryEntry[] | undefined,
 ): void {
   const mp = state.marketplaces[marketplace];
   if (mp?.plugins[plugin] === undefined) {
@@ -1676,6 +1726,10 @@ function updateStateRecord(
       unsupported: [...installable.unsupported],
     },
     resources: resourcesFromHandles(handles, plugin, installable),
+    // D-100-01 / ENBL-10: describe the hooks this re-materialize wrote. Top
+    // level, so it does not belong in `resourcesFromHandles`. Omitted when the
+    // resolved plugin declares no hooks -- that branch removed the subtree.
+    ...(hookEntries !== undefined && { hookEntries: [...hookEntries] }),
     enabled: true,
     installedAt: oldRecord.installedAt,
     updatedAt: new Date().toISOString(),
@@ -1713,6 +1767,16 @@ function successOutcome(
   handles: PreparedHandles,
 ): ReinstallReinstalledOutcome {
   const resources = resourcesFromHandles(handles);
+  // WARN-01 / WR-04 / D-86-03: the same per-kind degrade collection
+  // `install.ts` makes off its ledger context, read here off the prepared
+  // handles the bridges returned. Skill before command by collection order,
+  // matching the install emit order.
+  const degradedKinds = Array.from(
+    new Set<DegradeKind>([
+      ...(handles.skills.result.degraded.length > 0 ? (["skill"] as const) : []),
+      ...(handles.commands.result.degraded.length > 0 ? (["command"] as const) : []),
+    ]),
+  );
   // CMC-13: surface effective-state per-row soft-dep
   // predicates so cascade rendering can emit `{requires pi-subagents}` /
   // `{requires pi-mcp}` iff (declares AND companion unloaded). The
@@ -1726,11 +1790,12 @@ function successOutcome(
     marketplace,
     scope,
     version: oldRecord.version,
-    stagedAgents: resources.agents,
-    stagedMcpServers: resources.mcpServers,
+    stagedAgentNames: resources.agents,
+    stagedMcpServerNames: resources.mcpServers,
     declaresAgents: resources.agents.length > 0,
     declaresMcp: resources.mcpServers.length > 0,
     resourcesChanged: resourcesChanged(oldRecord.resources, resources),
+    ...(degradedKinds.length > 0 && { degradedKinds }),
   };
 }
 
@@ -1982,6 +2047,13 @@ function clonePluginRecord(record: PluginRecord): PluginRecord {
     // PURL-07 / D-78-02: preserve the recorded resolvedSha across the snapshot so
     // reinstall's recorded-sha probe (and the carry-forward rewrite) see the pin.
     ...(record.resolvedSha !== undefined && { resolvedSha: record.resolvedSha }),
+    // D-100-01 / ENBL-10: preserve the recorded hook description across the
+    // snapshot. This function enumerates fields rather than spreading, so an
+    // omission here silently drops the key from the old-record snapshot. Deep
+    // copy, matching the resources arrays below.
+    ...(record.hookEntries !== undefined && {
+      hookEntries: record.hookEntries.map((entry) => ({ ...entry })),
+    }),
     compatibility: {
       installable: record.compatibility.installable,
       notes: [...record.compatibility.notes],
@@ -2002,23 +2074,11 @@ function clonePluginRecord(record: PluginRecord): PluginRecord {
   };
 }
 
-function removePluginRecord(
-  state: ExtensionState,
-  marketplace: string,
-  plugin: string,
-): ExtensionState {
-  const cloned: ExtensionState = {
-    schemaVersion: state.schemaVersion,
-    marketplaces: { ...state.marketplaces },
-  };
-  const mp = cloned.marketplaces[marketplace];
-  if (mp === undefined) {
-    return cloned;
-  }
-
-  const plugins = { ...mp.plugins };
-  // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- cloned record map is local to the guard helper.
-  delete plugins[plugin];
-  cloned.marketplaces[marketplace] = { ...mp, plugins };
-  return cloned;
-}
+/**
+ * Test binding seam: exported under the `__test_*` prefix, following the
+ * sibling seams in this file. The snapshot enumerates fields rather than
+ * spreading, so a record key it forgets is dropped with NO compile error and
+ * NO observable failure until some future reader wants it. That silence is
+ * what the seam exists to break.
+ */
+export { clonePluginRecord as __test_clonePluginRecord };

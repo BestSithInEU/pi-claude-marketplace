@@ -456,7 +456,7 @@ export function notifyStopHookOverrideCap(ctx: ExtensionContext, pluginId: strin
  * renderer emits the discriminator literal directly into the `(<status>)`
  * brace slot.
  *
- * RLD-04 / D-08: the list-only inventory row uses `"installed"` with
+ * RLD-04: the list-only inventory row uses `"installed"` with
  * `needsReload: false` (the list surface's reload-suppression is carried by the
  * stamped `needsReload` flag, not by a separate status token). The four
  * `"will *"` entries are the DIFF-02 pending-tense tokens; the
@@ -665,12 +665,18 @@ export interface TransitionMessageBase extends MessageBase {
  * (`(installed) {orphan rewake, requires pi-subagents}`). The resolver-side
  * `resolved.orphanRewake === true` plugins are pushed into `reasons[]`.
  *
- * RLD-04 / D-08: this arm ALSO carries the list-surface steady-state inventory
- * row (the former `present` status, now collapsed into `installed`). The list
+ * This arm ALSO carries the list-surface steady-state inventory row. The list
  * orchestrator emits it with `needsReload: false` so the OR-reduce reload-hint
- * (RLD-02) stays suppressed for inventory, and OMITS `reasons` so the
- * orphan-rewake brace never leaks onto a steady-state row. `description?` is the
- * PL-4 optional second line, populated only on the list surface from the
+ * (RLD-02) stays suppressed for inventory. It DOES stamp `reasons` on that row:
+ * INV-01 added the `{not in manifest}` absence brace, so the field is shared by
+ * both surfaces and the row is not structurally bare. What separates them is
+ * the KIND of fact each stamps, and that split is documented convention rather
+ * than a render-path gate (D-95-01 / D-95-02): a steady-state inventory row may
+ * state DURABLE facts about the record -- an absence stays true across reloads
+ * until the manifest or the installation changes -- but not TRANSIENT
+ * conditions tied to a pending action, which is why `orphan rewake` stays an
+ * install-cascade reason and never appears on an inventory row. `description?`
+ * is the PL-4 optional second line, populated only on the list surface from the
  * manifest entry; cascade install rows never carry it.
  */
 export interface PluginInstalledMessage extends TransitionMessageBase {
@@ -686,7 +692,15 @@ export interface PluginInstalledMessage extends TransitionMessageBase {
 /**
  * `(updated)` -- update cascade row. Carries REQUIRED `from` / `to`
  * so the renderer can compose the `v1.0 → v1.2` arrow form;
- * `dependencies` REQUIRED; no `reasons`.
+ * `dependencies` REQUIRED.
+ *
+ * WR-12: `reasons` is OPTIONAL here, exactly as on `PluginInstalledMessage` and
+ * `PluginReinstalledMessage` and for the same reason. An update drives the same
+ * bridges as an install, so a component whose source frontmatter no longer
+ * parses degrades identically, and the row that reports the transition has to be
+ * able to name it (WARN-01 / D-86-03). Absent `reasons` renders the legacy
+ * brace-less row byte-for-byte: `composeReasons` returns `""` for an undefined
+ * list and `joinTokens` collapses the empty slot.
  */
 export interface PluginUpdatedMessage extends TransitionMessageBase {
   readonly status: "updated";
@@ -695,11 +709,19 @@ export interface PluginUpdatedMessage extends TransitionMessageBase {
   readonly to: string;
   readonly dependencies: readonly Dependency[];
   readonly scope?: Scope;
+  readonly reasons?: readonly ContentReason[];
 }
 
 /**
- * `(reinstalled)` -- reinstall cascade row. Carries `dependencies` (SNM-06);
- * no `reasons`.
+ * `(reinstalled)` -- reinstall cascade row. Carries `dependencies` (SNM-06).
+ *
+ * WR-09: `reasons` is OPTIONAL here, exactly as on `PluginInstalledMessage` and
+ * for the same reason. A reinstall drives the same bridges as an install, so a
+ * component whose source frontmatter no longer parses degrades identically, and
+ * the row that reports the transition has to be able to name it (WARN-01 /
+ * D-86-03). Absent `reasons` renders the legacy brace-less row byte-for-byte:
+ * `composeReasons` returns `""` for an undefined list and `joinTokens` collapses
+ * the empty slot.
  */
 export interface PluginReinstalledMessage extends TransitionMessageBase {
   readonly status: "reinstalled";
@@ -707,6 +729,7 @@ export interface PluginReinstalledMessage extends TransitionMessageBase {
   readonly dependencies: readonly Dependency[];
   readonly version?: string;
   readonly scope?: Scope;
+  readonly reasons?: readonly ContentReason[];
 }
 
 /**
@@ -723,21 +746,44 @@ export interface PluginUninstalledMessage extends TransitionMessageBase {
 
 /**
  * `(disabled)` -- D-54-01 / ENBL-04 closed-set token. Emitted on `list` /
- * `info` surfaces for plugins whose state record carries the
- * empty-resources + `installable: true` marker (the load-bearing predicate is
- * `orchestrators/reconcile/plan.ts::isRecordedButDisabled`), AND -- per the
- * UAT-03 decision -- as the `/claude:plugin
+ * `info` surfaces for plugins whose state record carries the explicit
+ * `enabled: false` boolean (ENBL-05: the load-bearing predicate is
+ * `persistence/state-io.ts::isRecordedButDisabled`, which reads that boolean
+ * and nothing else), AND -- per the UAT-03 decision -- as the `/claude:plugin
  * disable` command's fresh cascade row (byte-identical to the inventory row).
+ * Availability (`compatibility.installable`) is an ORTHOGONAL axis and is not
+ * part of the marker, so a partially-installed record the user disabled
+ * renders this same row.
  * RLD-05 / D-07: the reload-hint is driven by the caller-stamped `needsReload`
  * -- the fresh-disable transition stamps `true`, the list / info inventory row
  * stamps `false` -- so the row's reload behavior no longer depends on a cascade
- * kind. Structurally
- * distinct from `(unavailable)`: the variant carries no `reasons` (a disabled
- * plugin is in the user-requested state, not a failure state), and the byte
- * form differs (`(disabled)` vs `(unavailable)`).
+ * kind. Structurally distinct from `(unavailable)`: the byte form differs
+ * (`(disabled)` vs `(unavailable)`).
  *
- * NO `dependencies` / `reasons` / `cause` / `rollbackPartial` by construction
- * -- the inventory row is bare. The renderer arm uses `ICON_DISABLED`
+ * NO `dependencies` / `cause` / `rollbackPartial` by construction.
+ *
+ * ENBL-16 / D-100-07: `reasons` is OPTIONAL here, exactly as on
+ * `PluginInstalledMessage`, `PluginUpdatedMessage` and
+ * `PluginReinstalledMessage`, and it admits exactly one member --
+ * `not in manifest`. The governing rule: render durable facts that constrain
+ * what the user can do next; suppress facts about runtime behavior that is
+ * currently suspended. Manifest absence is the first kind: `plugin enable`
+ * re-runs the install ledger, which resolves from the marketplace manifest, so
+ * a disabled record the manifest no longer declares cannot be re-enabled, and
+ * the bare row gave no warning before the attempt. Which reasons a surface
+ * stamps is an ORCHESTRATOR decision (D-95-01) -- the render path holds no
+ * allowlist. Absent `reasons` renders the legacy brace-less row byte-for-byte:
+ * `composeReasons` returns `""` for an undefined list and `joinTokens`
+ * collapses the empty slot.
+ *
+ * ENBL-15 / D-100-06 stays structural in its place: the render arm passes both
+ * soft-dependency arguments hard-coded `false`, so a disabled row cannot emit
+ * `{requires pi-subagents}` / `{requires pi-mcp}` whatever the record's
+ * retained inventory holds (ENBL-18 keeps `resources.agents` /
+ * `resources.mcpServers` populated across a disable). Those markers state a
+ * runtime concern that is suspended while the plugin is disabled.
+ *
+ * The renderer arm uses `ICON_DISABLED`
  * (`◍`) -- the same glyph the `will disable` row uses. PL-4: optional
  * `description` rendered as a second 4-space-indented line, truncated at
  * column 66 (same as the other list-surface inventory variants).
@@ -748,6 +794,7 @@ export interface PluginDisabledMessage extends TransitionMessageBase {
   readonly version?: string;
   readonly scope?: Scope;
   readonly description?: string;
+  readonly reasons?: readonly ContentReason[];
 }
 
 /**
@@ -919,6 +966,13 @@ export interface PluginFailedMessage extends MessageBase {
   readonly reasons: readonly ContentReason[];
   readonly version?: string;
   readonly scope?: Scope;
+  // WR-02 / D-98-03: set on the enable-failure surface when the record-derived
+  // installable gate went stale -- the record was installable when the user
+  // disabled it and the manifest entry has since gained an unsupported kind, so
+  // `update --partial` re-pins it. The renderer appends the 4-space-indented
+  // update-worded `--partial` hint trailer below the row. Absent on every other
+  // failure producer, which render byte-frozen.
+  readonly partialHint?: boolean;
   readonly cause?: Error;
   readonly rollbackPartial?: readonly {
     // Free-form phase label sourced from transaction/phase-ledger.ts's
@@ -992,9 +1046,9 @@ export interface PluginWillUninstallMessage extends MessageBase {
 /**
  * `(will enable)` -- DIFF-02 pending-list row for a recorded plugin currently
  * marked disabled but newly declared `enabled: true`. The bucket is
- * populated only when the recorded-but-disabled marker (all four resource
- * arrays empty + `installable: true` -- see
- * `orchestrators/reconcile/plan.ts::isRecordedButDisabled`) is paired
+ * populated only when the recorded-but-disabled marker -- the record's
+ * explicit `enabled: false` boolean, read through
+ * `persistence/state-io.ts::isRecordedButDisabled` -- is paired
  * with a config entry whose `enabled !== false`.
  */
 export interface PluginWillEnableMessage extends MessageBase {
@@ -1297,6 +1351,12 @@ interface PluginInfoRowBase {
   // the info surface. `partially-upgradable` is deliberately omitted -- it is a
   // list-inventory-only concept (an installed plugin's info is partially-installed
   // or installed, never partially-upgradable).
+  //
+  // D-100-08 / ENBL-17: `disabled` joins the set so a disabled record can report its
+  // description and component inventory through the same row every other installed
+  // record uses, instead of a bare foreign-shaped one. This is a per-surface subset
+  // widening, not a new token -- `disabled` is already a member of the closed
+  // `PLUGIN_STATUSES` tuple, so the enumeration gates and the length lock are unaffected.
   readonly status: Extract<
     PluginStatus,
     | "installed"
@@ -1307,6 +1367,7 @@ interface PluginInfoRowBase {
     | "partially-available"
     | "failed"
     | "partially-installed"
+    | "disabled"
   >;
   readonly name: string;
   readonly version?: string;
@@ -2021,17 +2082,24 @@ export function composeReasons(
  * available.
  *
  * Soft-dep marker injection: only the `installed` / `updated` /
- * `reinstalled` arms carry `dependencies`; those arms
- * pass `p.dependencies.includes("agents")` / `p.dependencies.includes("mcp")`
- * to `composeReasons`. The other 7 arms pass `false` for both
- * declares-flags so the soft-dep markers cannot leak onto rows that
- * structurally never declare a soft dep.
+ * `reinstalled` / `partially-installed` arms declare `dependencies`; those
+ * arms pass `p.dependencies.includes("agents")` /
+ * `p.dependencies.includes("mcp")` to `composeReasons`. The other 15 arms pass
+ * `false` for both declares-flags so the soft-dep markers cannot leak onto
+ * rows that structurally never declare a soft dep. `partially-installed` is
+ * the one arm whose field is OPTIONAL (WR-03): the success cascades thread the
+ * staged counts, the inventory rows omit them.
  *
- * Per-variant `composeReasons` first argument:
- *  - 5 reasons-less variants (installed, updated, reinstalled,
- *  uninstalled, available) pass `undefined`;
- *  - 5 reasons-bearing variants (unavailable, upgradable, skipped,
- *  failed, manual recovery) pass `p.reasons`.
+ * Per-variant `composeReasons` first argument, over the 19 plugin statuses:
+ *  - 9 reasons-less variants (updated, uninstalled, available, remote, disabled,
+ *  will install, will uninstall, will enable, will disable) pass `undefined` --
+ *  or, on the arms that can carry no marker of any kind (remote and the four
+ *  pending-tense rows), drop the call entirely;
+ *  - 10 reasons-bearing variants (installed, reinstalled, unavailable,
+ *  upgradable, failed, skipped, manual recovery, partially-installed,
+ *  partially-upgradable, partially-available) pass `p.reasons`. `installed` and
+ *  `reinstalled` are the two arms whose field is OPTIONAL, so they pass a
+ *  possibly-undefined value.
  *
  * NOT rendered here (`notify` composes them as additional
  * indented lines AFTER the row):
@@ -2130,9 +2198,19 @@ export function partiallyInstalledRow(
  *
  * `versionToken` is the already-rendered version slot (the caller passes
  * `renderVersion(...)` or `composeVersionArrow(...)`); `reasons` is the optional
- * reason set (the `installed` arm threads `p.reasons`, the reasons-less variants
- * pass `undefined`); `dependencies` drives the `{requires pi-subagents}` /
+ * reason set; `dependencies` drives the `{requires pi-subagents}` /
  * `{requires pi-mcp}` markers via `composeReasons`.
+ *
+ * WR-13 / WR-12: which callers thread `reasons`, over the seven command arms
+ * folded here -- ALL of them now pass `p.reasons`: the five `(installed)` arms
+ * (install, enable, list, import, reconcile), the `(reinstalled)` arm (WR-09),
+ * and the `(updated)` arm (WR-12). The `(updated)` arm was the last caller
+ * passing `undefined`, because `PluginUpdatedMessage` carried no `reasons`
+ * field; since `update` stages through the same bridges and degrades a
+ * component exactly as install / enable / reinstall do, that gap rendered a
+ * clean `(updated)` row over a degraded component. The field is optional on
+ * every one of these message types, so a caller with nothing to report still
+ * composes the brace-less row byte for byte.
  */
 export function installedLikeRow(
   icon: string,
@@ -2168,15 +2246,15 @@ function renderPluginRow(
   mpScope: Scope,
 ): string {
   switch (p.status) {
-    // `installed` (cascade transition AND the RLD-04 / D-08 list-surface
-    // inventory row) -- SURF-05 / D-63-08 threads the optional `reasons`
-    // brace through composeReasons; soft-dep markers append into the SAME
-    // brace block per MSG-GR-4 (a plugin with orphan-rewake AND a missing
-    // companion extension renders as
-    // `(installed) {orphan rewake, requires pi-subagents}`). The list
-    // inventory row OMITS `reasons` (the orphan-rewake warning is an
-    // install-cascade surface, not a steady-state inventory surface), so it
-    // renders byte-identically to a bare `(installed)` row.
+    // `installed` (cascade transition AND the list-surface inventory row) --
+    // SURF-05 / D-63-08 threads the optional `reasons` brace through
+    // composeReasons; soft-dep markers append into the SAME brace block per
+    // MSG-GR-4 (a plugin with orphan-rewake AND a missing companion extension
+    // renders as `(installed) {orphan rewake, requires pi-subagents}`). BOTH
+    // surfaces can carry a brace: INV-01 stamps `{not in manifest}` on the
+    // list inventory row. The brace is omitted only when the composed list is
+    // empty, which is the ordinary case on both surfaces -- not a property of
+    // the inventory row.
     case "installed":
       return joinTokens([
         ICON_INSTALLED,
@@ -2191,6 +2269,10 @@ function renderPluginRow(
           probe,
         ),
       ]);
+    // `updated` -- WR-12 threads the optional `reasons` brace exactly as the
+    // `installed` and `reinstalled` arms do, so an update that degraded a
+    // component names the kind instead of rendering a bare success row over it.
+    // Soft-dep markers append into the SAME brace per MSG-GR-4.
     case "updated":
       return joinTokens([
         ICON_INSTALLED,
@@ -2199,12 +2281,16 @@ function renderPluginRow(
         composeVersionArrow(p.from, p.to),
         "(updated)",
         composeReasons(
-          undefined,
+          p.reasons,
           p.dependencies.includes("agents"),
           p.dependencies.includes("mcp"),
           probe,
         ),
       ]);
+    // `reinstalled` -- WR-09 threads the optional `reasons` brace exactly as the
+    // `installed` arm above, so a reinstall that degraded a component names the
+    // kind instead of rendering a bare success row over it. Soft-dep markers
+    // append into the SAME brace per MSG-GR-4.
     case "reinstalled":
       return joinTokens([
         ICON_INSTALLED,
@@ -2213,7 +2299,7 @@ function renderPluginRow(
         renderVersion(p.version),
         "(reinstalled)",
         composeReasons(
-          undefined,
+          p.reasons,
           p.dependencies.includes("agents"),
           p.dependencies.includes("mcp"),
           probe,
@@ -2320,9 +2406,10 @@ function renderPluginRow(
       // DIFF-02: pending-tense row for a recorded plugin newly
       // declared `enabled: true` after being locally disabled. Reuses
       // ICON_INSTALLED. The bucket is populated only when the recorded-
-      // but-disabled marker (empty resources + installable true) is paired
-      // with a config entry whose `enabled !== false`; the arm is always
-      // present so enable-wiring stays type-complete.
+      // but-disabled marker -- the record's explicit `enabled: false` boolean
+      // and nothing else, per ENBL-05 -- is paired with a config entry whose
+      // `enabled !== false`; the arm is always present so enable-wiring stays
+      // type-complete.
       return joinTokens([
         ICON_INSTALLED,
         p.name,
@@ -2331,7 +2418,7 @@ function renderPluginRow(
       ]);
     case "will disable":
       // DIFF-02: pending-tense row for a recorded plugin newly declared
-      // `enabled: false`. Uses ICON_DISABLED (`◌`) -- the same glyph the
+      // `enabled: false`. Uses ICON_DISABLED (`◍`) -- the same glyph the
       // realized `(disabled)` inventory row uses; this mirrors the precedent
       // that realized + pending-tense rows for the same row class share a
       // glyph (`●` for `(installed)` / `(will install)`, `○` for
@@ -2345,17 +2432,18 @@ function renderPluginRow(
     case "disabled":
       // D-54-01 / ENBL-04: list/info inventory row for a recorded-but-disabled
       // plugin. Subject-first grammar; uses the dedicated ICON_DISABLED
-      // (`◌`) glyph, the same glyph the `(will disable)` pending-tense row
-      // carries. NO reasons -- the variant carries none; composeReasons
-      // receives undefined + both soft-dep flags false (the inventory row
-      // never emits soft-dep markers).
+      // (`◍`) glyph, the same glyph the `(will disable)` pending-tense row
+      // carries. ENBL-16: the caller's `reasons` are threaded, and the caller
+      // stamps at most `not in manifest`; both soft-dep flags stay hard-coded
+      // false, which is what keeps the disabled row free of a soft-dep marker
+      // whatever inventory the record retained (ENBL-15).
       return joinTokens([
         ICON_DISABLED,
         p.name,
         renderScopeBracket(p.scope, mpScope),
         renderVersion(p.version),
         "(disabled)",
-        composeReasons(undefined, false, false, probe),
+        composeReasons(p.reasons, false, false, probe),
       ]);
     default: {
       assertNever(p);
@@ -2450,6 +2538,19 @@ const PARTIAL_INSTALL_HINT_TRAILER = "Re-run with --partial to install the suppo
  */
 const PARTIAL_UPDATE_HINT_TRAILER =
   "Re-run with --partial to update with the supported components.";
+
+/**
+ * CR-01 / D-98-03: the stale-gate enable-failure remediation trailer. DISTINCT
+ * from `PARTIAL_UPDATE_HINT_TRAILER` because the command that just failed is
+ * `enable`, which accepts no `--partial` flag (`edge/handlers/plugin/
+ * enable-disable.ts` parses a positional ref plus `--scope` / `--local` only) --
+ * a "re-run" instruction there names the wrong command and earns the user an
+ * `Unknown flag` usage error. This literal names `update` explicitly and states
+ * the follow-up `enable`, which is the remedy the catalog documents. Interpolates
+ * no plugin / marketplace identifier (T-73-01) and is locked byte-for-byte in
+ * docs/output-catalog.md and docs/messaging-style-guide.md.
+ */
+const STALE_GATE_UPDATE_HINT_TRAILER = "Run update --partial on this plugin, then enable it again.";
 
 /**
  * SEV-03: the desired-state tri-state contract every producer stamps on a row:
@@ -3172,6 +3273,10 @@ function pluginInfoStatusGlyph(status: PluginInfoRow["status"]): string {
       // FSTAT-02 / FSTAT-07 / D-66-03: info row for an installed plugin
       // re-resolving `partially-available` -- the dedicated `◉` glyph.
       return ICON_PARTIALLY_INSTALLED;
+    case "disabled":
+      // D-100-08 / ENBL-17: info row for a disabled record -- the existing
+      // `◍` glyph, so the slot stays byte-identical to the disabled list row.
+      return ICON_DISABLED;
     case "available":
       return ICON_AVAILABLE;
     case "remote":
@@ -3687,7 +3792,7 @@ function composePluginLinesWith(
 ): string[] {
   const lines: string[] = [`  ${renderRow(p, probe, mpScope)}`];
 
-  // PL-4 (RLD-04 / D-08): the list inventory rows (`installed` / `upgradable`
+  // PL-4: the list inventory rows (`installed` / `upgradable`
   // / `available` / `remote` / `unavailable` / `partially-available` /
   // `disabled` / `partially-installed` / `partially-upgradable`) carry the
   // manifest description; cascade `installed` rows never set `description`, so
@@ -3728,6 +3833,16 @@ function composePluginLinesWith(
   // `partially-upgradable` row omits `partialHint` and stays byte-frozen.
   if (p.status === "partially-upgradable" && p.partialHint === true) {
     lines.push(`    ${PARTIAL_UPDATE_HINT_TRAILER}`);
+  }
+
+  // CR-01 / D-98-03: the stale-gate enable failure takes its OWN trailer. Its
+  // remedy is `update --partial` too, but the failed command is `enable`, so the
+  // "re-run" wording of `PARTIAL_UPDATE_HINT_TRAILER` would name a command that
+  // rejects the flag it advertises. Only the enable-failure narrowing stamps
+  // `partialHint` on a `failed` row -- every other producer of one omits it, so
+  // this gate stays inert for them.
+  if (p.status === "failed" && p.partialHint === true) {
+    lines.push(`    ${STALE_GATE_UPDATE_HINT_TRAILER}`);
   }
 
   if (p.status === "failed" || p.status === "manual recovery") {

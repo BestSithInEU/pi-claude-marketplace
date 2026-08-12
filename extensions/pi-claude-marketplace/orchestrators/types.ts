@@ -7,8 +7,10 @@
 // D-01's escalation note about a future BridgeOps<Prep, Target>
 // belonging at this same path.
 
+import type { DegradeKind } from "../shared/notify-reasons.ts";
 import type { ContentReason } from "../shared/notify.ts";
 import type { Scope } from "../shared/types.ts";
+import type { LedgerDegradationSignals } from "./plugin/shared.ts";
 
 export type ReinstallPluginPartition = "reinstalled" | "skipped" | "failed";
 
@@ -22,17 +24,27 @@ export interface ReinstallReinstalledOutcome extends ReinstallOutcomeBase {
   readonly partition: "reinstalled";
   readonly version: string;
   readonly resourcesChanged: boolean;
-  readonly stagedAgents: readonly string[];
-  readonly stagedMcpServers: readonly string[];
+  /**
+   * D-99-02c: the GENERATED NAMES the reinstall ledger staged. The `Names`
+   * suffix keeps them spelled apart from the same-subject presence FLAGS on
+   * `LedgerDegradationSignals` (`plugin/shared.ts`), which carry a count
+   * verdict only. A name list and a boolean answer different questions --
+   * `which resources were written` versus `does the row declare the
+   * companion` -- so the two must not be confusable at a producer or a
+   * consumer site.
+   */
+  readonly stagedAgentNames: readonly string[];
+  readonly stagedMcpServerNames: readonly string[];
   /**
    * CMC-13: per-row soft-dep predicate inputs. `true` iff
    * the plugin's resolved manifest declared the kind AND it was actually
    * staged at reinstall time (the orchestrator already tracks
-   * `stagedAgents.length > 0` / `stagedMcpServers.length > 0` per-outcome;
-   * these flags surface them through the typed outcome so cascade rendering
+   * `stagedAgentNames.length > 0` / `stagedMcpServerNames.length > 0`
+   * per-outcome; these flags surface them through the typed outcome so
+   * cascade rendering
    * (`PluginCascadeRow.declaresAgents` / `.declaresMcp`) consumes the
    * effective-state-at-render-time signal without re-deriving from the
-   * stagedAgents / stagedMcpServers arrays at the renderer site).
+   * staged-name arrays at the renderer site).
    *
    * MSG-SD-3: per-row markers fire on `(reinstalled)` rows only. These
    * flags live ONLY on this reinstalled arm; the `(skipped)` and
@@ -48,6 +60,16 @@ export interface ReinstallReinstalledOutcome extends ReinstallOutcomeBase {
    */
   readonly declaresAgents: boolean;
   readonly declaresMcp: boolean;
+  /**
+   * WARN-01 / WR-04 / D-86-03: the component kinds whose SOURCE frontmatter
+   * could not be parsed and which re-materialized in degraded form. The
+   * reinstall primitive drives the load-time backfill, so without this the
+   * backfill projection renders a clean row over a ledger that just degraded a
+   * component -- the contradiction the install and enable arms already avoid by
+   * carrying the same signal. Omitted when nothing degraded, so a clean
+   * reinstall's outcome shape is unchanged (NREG-01).
+   */
+  readonly degradedKinds?: readonly DegradeKind[];
   readonly notes?: readonly string[];
 }
 
@@ -126,16 +148,56 @@ interface PluginUpdateBase {
 /**
  * `(updated)` partition. `fromVersion` and `toVersion`
  * are REQUIRED here -- the orchestrator transitioned the install record
- * from one to the other. `stagedAgents` / `stagedMcpServers` are the
+ * from one to the other. `stagedAgentNames` / `stagedMcpServerNames` are the
  * names of resources that were actually written during the update
  * (WR-04 / RH-5 input).
+ *
+ * WR-12 / D-99-03: INHERITS `LedgerDegradationSignals` rather than declaring a
+ * private `degradedKinds` of its own. `update` stages through the same skills
+ * and commands bridges as install, enable and reinstall, so it degrades a
+ * component the same way and must report it the same way; inheriting means a
+ * signal added to that shape reaches this outcome instead of silently missing
+ * from the one verb that redeclared it. Every member arrives OPTIONAL, so a
+ * clean update's outcome shape is unchanged (NREG-01).
+ *
+ * WR-01: inheriting a signal is only half the claim -- the verb has to POPULATE
+ * and RENDER it, or the shape promises a reach the rows do not have. Two of the
+ * five are live here (`degradedKinds`, `orphanRewake`); the other three are
+ * pinned `never` below because this outcome already spells the same three facts
+ * in its own REQUIRED fields, and two spellings of one fact on one type is what
+ * D-99-02c's rename set out to remove.
  */
-export interface PluginUpdateUpdatedOutcome extends PluginUpdateBase {
+export interface PluginUpdateUpdatedOutcome extends PluginUpdateBase, LedgerDegradationSignals {
   readonly partition: "updated";
   readonly fromVersion: string;
   readonly toVersion: string;
-  readonly stagedAgents: readonly string[];
-  readonly stagedMcpServers: readonly string[];
+  /**
+   * D-99-02c: generated NAMES, spelled apart from the same-subject presence
+   * flags on `LedgerDegradationSignals` (`plugin/shared.ts`). While both
+   * shapes spelled these members the same way, a `readonly string[]` member
+   * collided with an optional `boolean` one, so this outcome could not
+   * extend the signal shape at all.
+   */
+  readonly stagedAgentNames: readonly string[];
+  readonly stagedMcpServerNames: readonly string[];
+  /**
+   * WR-01: the three inherited signals this verb spells elsewhere, pinned to
+   * `never` so a producer cannot populate a second spelling of a fact the
+   * outcome already carries. `never` still satisfies the inherited optional
+   * `boolean` / `string[]`, so the inheritance itself is untouched and a signal
+   * ADDED to `LedgerDegradationSignals` tomorrow still lands here unpinned --
+   * which is the property the inheritance exists for.
+   *
+   *  - the inherited `unsupported` array is `partialDegrade.kinds` here, which
+   *    pairs the dropped kinds with the `newlyDegraded` verdict that makes them
+   *    actionable.
+   *  - `stagedAgents` / `stagedMcpServers` are the presence half of
+   *    `stagedAgentNames` / `stagedMcpServerNames`, already reduced to the
+   *    required `declaresAgents` / `declaresMcp` predicates above.
+   */
+  readonly unsupported?: never;
+  readonly stagedAgents?: never;
+  readonly stagedMcpServers?: never;
   /**
    * FSTAT-07 / D-66-04 / SEV-03 / D-69-01: the partial-degrade signal for a
    * `--partial` update whose candidate re-resolved `partially-available`. Present

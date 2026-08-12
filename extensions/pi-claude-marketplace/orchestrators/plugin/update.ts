@@ -27,7 +27,7 @@
 //
 //  Phase 3b (compose recovery hint or success): if any failures, wrap in
 //  PluginUpdatePhase3Error with RECOVERY_PLUGIN_REINSTALL_PREFIX hint.
-//  Else: success outcome carries WR-04 stagedAgents/stagedMcpServers.
+//  Else: success outcome carries WR-04 stagedAgentNames/stagedMcpServerNames.
 //
 // PUP-9 routing:
 //  updateSinglePlugin -- cascade path -- catches into partition='failed'
@@ -82,8 +82,9 @@ import {
   commitPreparedSkills,
   prepareStageSkills,
 } from "../../bridges/skills/index.ts";
-import { parseHooksConfig } from "../../domain/components/hooks.ts";
+import { parseHooksConfig, projectHookSummaryEntries } from "../../domain/components/hooks.ts";
 import { PLUGIN_ENTRY_VALIDATOR, type PluginEntry } from "../../domain/components/plugin.ts";
+import { lookupDeclaredPlugin } from "../../domain/manifest-lookup.ts";
 import { loadMarketplaceManifest } from "../../domain/manifest.ts";
 import { asAbsolutePluginRoot } from "../../domain/plugin-root.ts";
 import {
@@ -94,7 +95,7 @@ import {
 import { parsePluginSource } from "../../domain/source.ts";
 import { shaVersion } from "../../domain/version.ts";
 import { locationsFor } from "../../persistence/locations.ts";
-import { loadState } from "../../persistence/state-io.ts";
+import { isRecordedButDisabled, loadState } from "../../persistence/state-io.ts";
 import { softDepStatus } from "../../platform/pi-api.ts";
 import { dropMarketplaceCache } from "../../shared/completion-cache.ts";
 import {
@@ -118,7 +119,7 @@ import {
 import { companionSeverity, skipSeverity } from "../../shared/notify-reasons.ts";
 import { compareByNameThenScope, notify } from "../../shared/notify.ts";
 import { narrowUnsupportedKinds } from "../../shared/probe-classifiers.ts";
-import { withStateGuard } from "../../transaction/with-state-guard.ts";
+import { withLockedStateTransaction, withStateGuard } from "../../transaction/with-state-guard.ts";
 import { DEFAULT_CREDENTIAL_OPS, buildAuthForHost, hostFromCloneUrl } from "../auth-host.ts";
 import { DEFAULT_GIT_OPS, refreshGitHubClone, type GitOps } from "../marketplace/shared.ts";
 
@@ -135,10 +136,12 @@ import {
   assertNoCrossPluginConflicts,
   MarketplaceNotAddedSignal,
   maybeWritePluginConfigBack,
+  removePluginRecord,
   resolveInstalledMarketplaceTarget,
   resolveInstalledPluginTarget,
   resolvePluginVersion,
 } from "./shared.ts";
+import { updatedRowFromOutcome } from "./update-row.ts";
 import { UPDATE_CONTEXT, type UpdateMsg } from "./update.messaging.ts";
 
 import type { PreparedAgentsStaging } from "../../bridges/agents/index.ts";
@@ -150,7 +153,8 @@ import type { GitBackedSource, ParsedSource } from "../../domain/source.ts";
 import type { ScopedLocations } from "../../persistence/locations.ts";
 import type { ExtensionState } from "../../persistence/state-io.ts";
 import type { ExtensionAPI, ExtensionContext, SoftDepStatus } from "../../platform/pi-api.ts";
-import type { Dependency } from "../../shared/concerns/soft-dep.ts";
+import type { HookSummaryEntry } from "../../shared/concerns/hooks.ts";
+import type { DegradeKind } from "../../shared/notify-reasons.ts";
 import type { ContentReason, PluginFailedMessage } from "../../shared/notify.ts";
 import type { Scope } from "../../shared/types.ts";
 import type { AuthAttemptResult, CredentialOps, DeviceFlowHttp } from "../auth-host.ts";
@@ -969,6 +973,29 @@ async function resolveUpdateCandidate(
   }
 }
 
+/**
+ * WR-04 / WR-01 / D-98-04: the record shape whose re-pin may run WITHOUT the
+ * caller's `--partial` flag -- a disabled record that is ALREADY degraded.
+ *
+ * Composed from the single ENBL-05 disabled predicate; the availability axis is
+ * read HERE, beside it, and never folded into it. The two facts stay orthogonal
+ * as far as "is this record disabled" is concerned. What this predicate answers
+ * is narrower: has the user ALREADY consented to this record's degradation?
+ *
+ * WR-01: a record that is disabled but still CLEAN has consented to nothing. If
+ * its manifest entry has newly gained an unsupported kind, admitting it here
+ * would let `refreshDisabledRecord` write `installable: false` plus the dropped
+ * kinds with no flag typed and no row naming the degradation -- and the bulk
+ * and autoupdate paths funnel through this same preflight, so the flip could
+ * happen with no user command at all. A clean disabled record therefore keeps
+ * the XSURF-03 decline row, and its degrade still needs an explicit `--partial`.
+ */
+function widensPartialGate(
+  record: ExtensionState["marketplaces"][string]["plugins"][string],
+): boolean {
+  return isRecordedButDisabled(record) && !record.compatibility.installable;
+}
+
 async function preflightUpdate(
   args: ThreePhaseArgs,
 ): Promise<PluginPreflight | PluginUpdateOutcome> {
@@ -999,12 +1026,17 @@ async function preflightUpdate(
   // nonexistent name -- it must classify as `(failed) {not in manifest}` like
   // `install`, not the misleading `(skipped) {not installed}` that the
   // installed-state-first ordering produced.
+  //
+  // The read is unguarded on purpose: a manifest this verb cannot read is a
+  // throw, not a row, so the membership question is asked only of a manifest
+  // that was actually parsed. `lookupDeclaredPlugin` (D-99-02a) is the one
+  // writing of that question, shared with `list` and `info`.
   const manifest = await loadCachedMarketplaceManifest(mp.manifestPath);
-  const entryRaw = manifest.plugins.find((p) => p.name === plugin);
+  const lookup = lookupDeclaredPlugin(manifest, plugin);
 
   const record = mp.plugins[plugin];
   if (record === undefined) {
-    if (entryRaw === undefined) {
+    if (lookup.kind === "absent") {
       // Not installed AND absent from the manifest -> failed {not in manifest}
       // (matches install.ts's `not-in-manifest` arm). No `fromVersion` since
       // there is no install record to read a version from.
@@ -1031,7 +1063,7 @@ async function preflightUpdate(
     };
   }
 
-  if (entryRaw === undefined) {
+  if (lookup.kind === "absent") {
     // Installed but no longer listed in the refreshed manifest -> skipped
     // {not in manifest} with the recorded `fromVersion` (preserved behavior).
     return {
@@ -1045,6 +1077,7 @@ async function preflightUpdate(
     };
   }
 
+  const entryRaw = lookup.entry;
   if (!PLUGIN_ENTRY_VALIDATOR.Check(entryRaw)) {
     return {
       partition: "skipped",
@@ -1080,10 +1113,18 @@ async function preflightUpdate(
     },
   );
 
+  // WR-04 / D-98-04: derive the gate from the RECORD as well as the caller
+  // flag, the same record-derived stance the enable branch takes (ENBL-07 /
+  // D-69-01). The strict gate exists so a degrade is never materialized without
+  // consent, and a disabled record materializes nothing: the D-UPD short-circuit
+  // below rewrites only version, resolvedSource, resolvedSha, compatibility and
+  // the updated-at stamp inside a state guard, leaving every `resources.*` array
+  // empty. Without this widening a disabled PARTIAL record is declined by the
+  // one command that can re-pin it against the current manifest entry.
   const candidate = await resolveUpdateCandidate(entry, mp.marketplaceRoot, clone.probe, {
     plugin,
     fromVersion: record.version,
-    partial: args.partial === true,
+    partial: args.partial === true || widensPartialGate(record),
   });
   if ("partition" in candidate) {
     return candidate;
@@ -1098,7 +1139,20 @@ async function preflightUpdate(
   // Path / github-name plugins keep the 3-tier `resolvePluginVersion` ladder.
   const resolvedSha = clone.resolvedSha();
   const toVersion = await deriveUpdateToVersion(entry, installable, resolvedSha);
-  if (toVersion === fromVersion) {
+  // D-99-05a: version equality is the whole answer for an ENABLED record --
+  // nothing else it holds can move without the version moving, because every
+  // other field is rewritten by the materialization the version gates.
+  //
+  // A DISABLED record holds more than the version. `refreshDisabledRecord` also
+  // owns `resolvedSource` and the `compatibility` block, and both move
+  // independently of the pin: a path-source marketplace re-added from another
+  // directory, or a manifest entry that gains or loses an unsupported kind with
+  // no version bump. Returning here would leave a later `enable` pointed at a
+  // path that may no longer exist, or gated on a stale availability
+  // discriminant. So a disabled record falls THROUGH to
+  // `runDisabledRecordRefresh`, which re-derives this same version equality for
+  // its row and lets the refresh's own guard decide whether to write.
+  if (toVersion === fromVersion && !isRecordedButDisabled(record)) {
     // `(unchanged)` rows do not render the soft-dep marker either.
     return {
       partition: "unchanged",
@@ -1341,55 +1395,290 @@ async function markUpdateInProgress(
  * is a truthful "we touched this record" stamp.
  */
 /**
- * ENBL-02: same rule as `reconcile/plan.ts::isRecordedButDisabled`.
- * Duplicated here to avoid pulling the reconcile module into the orchestrator's
- * import graph; the planner is the canonical owner and this predicate is the
- * deliberate same-rule mirror (`enable-disable.ts::isCurrentlyDisabled` does
- * the same for its own reasons).
+ * D-99-05a: the slice of a disabled record that {@link refreshDisabledRecord}
+ * owns, normalized to one string so two snapshots compare with `===` rather
+ * than through a hand-rolled recursive walk. Positional, so no key ordering can
+ * make equal records compare unequal.
+ *
+ * `updatedAt` is deliberately absent: the refresh derives it from the wall
+ * clock, so a projection carrying it would differ from itself on every call and
+ * the guard could never hold.
+ *
+ * Element order WITHIN the three component-kind arrays is significant,
+ * and that is a real dependence on the resolver, not an accident of this
+ * function. The projection is compared against one built from a record written
+ * by an EARLIER resolution, so a resolver whose emit order varies between two
+ * resolutions of the same input makes every disabled plugin read as moved: the
+ * RECON-05 no-write guard stops holding, and `disabledRefreshWouldWrite` starts
+ * acquiring the `retries: 0` lock on every pass. Sorting here would hide that
+ * rather than fix it, so the contingency is pinned by a test instead -- see the
+ * WR-08 case in `tests/orchestrators/plugin/update.test.ts`, which round-trips
+ * multi-element lists through `state.json`.
  */
-function isRecordedButDisabled(
-  record: ExtensionState["marketplaces"][string]["plugins"][string],
-): boolean {
-  return record.compatibility.installable && !record.enabled;
+function disabledPinProjection(
+  version: string,
+  resolvedSource: string,
+  resolvedSha: string | undefined,
+  compatibility: {
+    readonly installable: boolean;
+    readonly notes: readonly string[];
+    readonly supported: readonly string[];
+    readonly unsupported: readonly string[];
+  },
+): string {
+  return JSON.stringify([
+    version,
+    resolvedSource,
+    resolvedSha ?? null,
+    compatibility.installable,
+    [...compatibility.notes],
+    [...compatibility.supported],
+    [...compatibility.unsupported],
+  ]);
+}
+
+/** The compatibility block a disabled-record refresh would write, plus its projection. */
+interface NextDisabledPin {
+  readonly compatibility: {
+    readonly installable: boolean;
+    readonly notes: string[];
+    readonly supported: string[];
+    readonly unsupported: string[];
+  };
+  readonly projection: string;
 }
 
 /**
- * D-UPD: refresh a disabled-but-recorded plugin's version pin + resolvedSource
- * inside a withStateGuard so a future `enable` re-materializes from the
- * current manifest. Resources.* stay empty (the plugin is still disabled).
- * The standalone-direct write-back (maybeWritePluginConfigBack) is
- * SKIPPED -- the config entry already exists by construction (the disabled
- * record only persists when the user explicitly disabled it), and writing
- * the byte-stable `{}` patch would touch state.json mtime via the SOLE
- * sanctioned save seam without changing user-visible bytes.
+ * D-99-05a: the values a refresh WOULD write, derived from the preflight
+ * resolution alone. `shaFallback` is the sha the record keeps when this source
+ * carries no pin -- read from the live record inside the transaction and from
+ * the preflight snapshot outside it, which is the only difference between the
+ * two callers.
+ *
+ * ENBL-09: the availability discriminant is DERIVED from the resolution rather
+ * than hard-coded, so it always agrees with the unsupported list copied beside
+ * it. `installable: true` next to a non-empty `unsupported` array is a record
+ * whose two fields contradict each other, and every downstream classifier reads
+ * a different token off the same record.
+ */
+function nextDisabledPin(
+  preflight: PluginPreflight,
+  shaFallback: string | undefined,
+): NextDisabledPin {
+  const { installable, toVersion, resolvedSha } = preflight;
+  const compatibility = {
+    installable: installable.state === "installable",
+    notes: [...installable.notes],
+    supported: [...installable.supported],
+    unsupported: [...installable.unsupported],
+  };
+  return {
+    compatibility,
+    projection: disabledPinProjection(
+      toVersion,
+      installable.pluginRoot,
+      // The sha the record would END UP with: a path / github-name source
+      // carries no pin and leaves the recorded one alone, so comparing against a
+      // bare `undefined` would read every such refresh as a move.
+      resolvedSha ?? shaFallback,
+      compatibility,
+    ),
+  };
+}
+
+/**
+ * WR-02 / NFR-3: would the refresh below write anything, judged from the record
+ * `preflightUpdate` already loaded? A disabled record at an unchanged version
+ * now falls THROUGH to the refresh, and the refresh opens a `retries: 0` scope
+ * lock. On a scope where nothing moved, that turned a previously lock-free
+ * no-op into a `StateLockHeldError` whenever another process held the lock --
+ * and the bare-form batch aborts on that throw, taking every target after the
+ * disabled one with it. A plugin with nothing to write must not pay for the
+ * lock.
+ *
+ * The snapshot is read outside the lock, so this answer is advisory about the
+ * RECORD: the in-transaction guard re-derives the same comparison against the
+ * live record and is the authority for whether the write happens. Neither guard
+ * is fresher than `preflightUpdate` about the RESOLUTION -- both derive the
+ * `next` side from the same out-of-lock resolve.
+ */
+function disabledRefreshWouldWrite(preflight: PluginPreflight): boolean {
+  const { record } = preflight;
+  const next = nextDisabledPin(preflight, record.resolvedSha);
+  const current = disabledPinProjection(
+    record.version,
+    record.resolvedSource,
+    record.resolvedSha,
+    record.compatibility,
+  );
+  return next.projection !== current;
+}
+
+/**
+ * D-UPD: refresh a disabled-but-recorded plugin's version pin, resolvedSource
+ * and compatibility block under the scope lock so a future `enable`
+ * re-materializes from the current manifest.
+ *
+ * ENBL-18 SKEW, deliberate: `resources.*` and `hookEntries` are NOT touched, so
+ * after `disable` -> `update` the record pins version B while its inventory
+ * still describes what version A materialized. The two fields answer different
+ * questions -- the pin says what the next `enable` will install, the inventory
+ * says what the last install actually put on disk -- and only `enable` can make
+ * them agree, because only `enable` re-materializes. Clearing the inventory
+ * instead would trade a stale answer for no answer at all, which is the
+ * self-describing record ENBL-18 exists to keep; refusing to move the pin would
+ * leave a future `enable` installing a version the marketplace no longer
+ * declares. `info` and `list` therefore render the retained inventory under the
+ * NEW version until the plugin is enabled again -- recorded in the
+ * `state-only-disabled-with-components` catalog state.
+ *
+ * The standalone-direct write-back
+ * (maybeWritePluginConfigBack) is SKIPPED -- the config entry already exists by
+ * construction (the disabled record only persists when the user explicitly
+ * disabled it), and writing the byte-stable `{}` patch would touch state.json
+ * mtime via the SOLE sanctioned save seam without changing user-visible bytes.
+ *
+ * D-99-05a: reached on an unchanged version too, so the guard below is what
+ * keeps a repeated update from rewriting an already-current record. RECON-05:
+ * nothing moved means no save at all -- not a save that happens to land the
+ * same values, which still bumps `updatedAt` and state.json's mtime. That is
+ * why the transaction saves explicitly instead of using `withStateGuard`, which
+ * persists unconditionally.
+ *
+ * Returns whether anything was written.
  */
 async function refreshDisabledRecord(
   args: ThreePhaseArgs,
   preflight: PluginPreflight,
-): Promise<void> {
+): Promise<boolean> {
   const { plugin, marketplace, locations } = args;
-  const { installable, toVersion } = preflight;
-  await withStateGuard(locations, (s) => {
-    const sMp = s.marketplaces[marketplace];
+  const { installable, toVersion, resolvedSha } = preflight;
+  return withLockedStateTransaction(locations, async (tx) => {
+    const sMp = tx.state.marketplaces[marketplace];
     if (sMp === undefined) {
-      return;
+      return false;
     }
 
     const sRecord = sMp.plugins[plugin];
     if (sRecord === undefined) {
-      return;
+      return false;
+    }
+
+    // Re-derived against the LIVE record, which `disabledRefreshWouldWrite`
+    // could only see as a pre-lock snapshot. Only the CURRENT half of the
+    // comparison is live, though: the NEXT half comes from `preflight`, whose
+    // `installable` / `toVersion` were resolved outside this lock. So this guard
+    // is authoritative about the RECORD and no fresher than the preflight about
+    // the RESOLUTION -- it cannot tell that the marketplace manifest moved after
+    // `preflightUpdate` read it, and a caller must not skip its own re-resolve
+    // on the strength of holding this lock.
+    const next = nextDisabledPin(preflight, sRecord.resolvedSha);
+    const nextCompatibility = next.compatibility;
+    const current = disabledPinProjection(
+      sRecord.version,
+      sRecord.resolvedSource,
+      sRecord.resolvedSha,
+      sRecord.compatibility,
+    );
+    if (next.projection === current) {
+      return false;
     }
 
     sRecord.version = toVersion;
     sRecord.resolvedSource = installable.pluginRoot;
-    sRecord.compatibility = {
-      installable: true,
-      notes: [...installable.notes],
-      supported: [...installable.supported],
-      unsupported: [...installable.unsupported],
-    };
+    // PURL-06 / PURL-09 / D-77-02 / D-78-01: the pin and the sha-derived
+    // version move TOGETHER. For a git source `toVersion` is `shaVersion(
+    // resolvedSha)`, so writing the version without the sha leaves the record
+    // advertising the new commit while `reinstall` still pins its re-clone to
+    // the old one -- a silent revert of the update with no row saying so.
+    // Mirrors the write `finalizeUpdateRecord` makes on its all-success arm;
+    // undefined for path / github-name sources, which carry no pin.
+    if (resolvedSha !== undefined) {
+      sRecord.resolvedSha = resolvedSha;
+    }
+
+    sRecord.compatibility = nextCompatibility;
     sRecord.updatedAt = new Date().toISOString();
+    await tx.save();
+    return true;
   });
+}
+
+/**
+ * The disabled-record arm of the three-phase body: refresh the pin, sweep the
+ * clone the refresh un-referenced, and pick the row.
+ *
+ * Extracted so the reordering that made this arm reachable on an unchanged
+ * version does not add a branch to `runThreePhaseUpdate`'s already-suppressed
+ * complexity budget.
+ */
+async function runDisabledRecordRefresh(
+  args: ThreePhaseArgs,
+  preflight: PluginPreflight,
+): Promise<PluginUpdateOutcome> {
+  const { plugin } = args;
+  const { fromVersion, toVersion } = preflight;
+  // WR-02 / NFR-3: skip the whole transaction -- and therefore the `retries: 0`
+  // scope lock -- when the snapshot says nothing can have moved. The refresh's
+  // own in-transaction guard stays the authority on whether the write happens.
+  const wrote = disabledRefreshWouldWrite(preflight)
+    ? await refreshDisabledRecord(args, preflight)
+    : false;
+
+  // PURL-06 / D-78-01: a refresh that moved the pin re-pointed resolvedSource +
+  // resolvedSha at the clone `preflightUpdate` just materialized, so the OLD
+  // clone key is now unreferenced. This arm RETURNS before the finalize path's
+  // GC-after-swap, so without this sweep every repeated update of a disabled
+  // git-source plugin leaves one more orphan until some unrelated command
+  // happens to sweep -- the accumulation the derive-not-persist GC exists to
+  // prevent. Same shape as the finalize call: outside the state guard (the
+  // refresh's transaction has committed and released), gated on a git-source
+  // swap, and swallowed per D-19-01. A refresh that wrote nothing un-referenced
+  // nothing, so it sweeps nothing either.
+  if (wrote && preflight.resolvedSha !== undefined) {
+    try {
+      await garbageCollectPluginClones(args.locations);
+    } catch {
+      // D-19-01: a GC failure never fails the update; the next pass retries.
+    }
+  }
+
+  if (toVersion === fromVersion) {
+    // D-99-05a row contract: the `unchanged` row stays, byte for byte, even
+    // when the refresh above moved the source or the compatibility block. The
+    // row reports the ARTIFACT state, and that state genuinely is unchanged --
+    // a disabled record materializes nothing either way. Moving a byte-pinned
+    // row here would buy the reader no new fact and cost a catalog amendment,
+    // so the up-to-date claim is kept deliberately, not by omission.
+    return {
+      partition: "unchanged",
+      name: plugin,
+      fromVersion,
+      toVersion,
+      declaresAgents: false,
+      declaresMcp: false,
+    };
+  }
+
+  // WR-02: NOT the `unchanged` partition. `unchanged` renders `{up-to-date}`,
+  // a claim about the VERSION, and the refresh just moved that version along
+  // with the source, the sha and the compatibility block. `up-to-date` is
+  // therefore the one fact this row cannot claim. Report the skip that actually
+  // happened and name why nothing was materialized: the record is disabled.
+  // Both tokens are inherited closed-set members; `already disabled` is
+  // idempotent, so the row keeps its info severity and emits no summary line.
+  // `fromVersion` is deliberately omitted: the record no longer holds it (the
+  // refresh just moved the pin), so rendering it in the row's version slot
+  // would trade one stale claim for another. The row makes no version claim,
+  // which is the same slot shape the `unchanged` projection renders above.
+  return {
+    partition: "skipped",
+    name: plugin,
+    notes: [],
+    reasons: ["already disabled"] as const,
+    declaresAgents: false,
+    declaresMcp: false,
+  };
 }
 
 async function finalizeUpdateRecord(
@@ -1397,6 +1686,7 @@ async function finalizeUpdateRecord(
   preflight: PluginPreflight,
   handles: PrepHandles,
   phase3aFailures: readonly Phase3Failure[],
+  hookEntries: readonly HookSummaryEntry[] | undefined,
 ): Promise<{ readonly invalidConfigWriteBack: boolean }> {
   const { plugin, marketplace, locations } = args;
   const { installable, toVersion, resolvedSha } = preflight;
@@ -1458,6 +1748,16 @@ async function finalizeUpdateRecord(
     // the swap" and the existing slug stays.
     if (!failedPhases.has("hooks")) {
       sRecord.resources.hooks = installable.hooksConfigPath === undefined ? [] : [plugin];
+      // D-100-01 / ENBL-10: the record's hook description moves with the
+      // inventory slug, under the same guard and in the same direction. When
+      // version B declares no hooks the description is dropped, so the record
+      // never names hooks the current version no longer declares; when the
+      // hooks commit failed neither fact moves and both keep version A's value.
+      if (hookEntries === undefined) {
+        delete sRecord.hookEntries;
+      } else {
+        sRecord.hookEntries = [...hookEntries];
+      }
     }
 
     // SC#2 all-or-nothing: version bump + installable=true + resolvedSource
@@ -1559,22 +1859,16 @@ async function runThreePhaseUpdate(args: ThreePhaseArgs): Promise<PluginUpdateOu
 
   const { installable, fromVersion, toVersion } = preflight;
 
-  // D-UPD: a disabled-but-recorded plugin (empty resources.* + installable=true,
-  // the same marker the planner reads via isRecordedButDisabled) must NOT
-  // re-materialize artifacts; an `enable` after the update is the rematerialization
-  // surface. Refresh the record's version + resolvedSource so a future enable
-  // reads the current pin, but keep `resources.*` empty. Renders the existing
-  // `unchanged` byte form -- the artifact state really is unchanged.
+  // D-UPD / ENBL-05: a disabled-but-recorded plugin (explicit `enabled: false`
+  // read through the single `isRecordedButDisabled` predicate -- degraded or
+  // not, since availability is an orthogonal axis) must NOT re-materialize
+  // artifacts; an `enable` after the update is the rematerialization surface.
+  // ENBL-09: refresh the record's version, resolvedSource and compatibility so
+  // a future enable reads the current pin. ENBL-18: `resources.*` and
+  // `hookEntries` are left alone -- they describe the last installation, and
+  // only a re-materialization can move them (see `refreshDisabledRecord`).
   if (isRecordedButDisabled(preflight.record)) {
-    await refreshDisabledRecord(args, preflight);
-    return {
-      partition: "unchanged",
-      name: plugin,
-      fromVersion,
-      toVersion: fromVersion,
-      declaresAgents: false,
-      declaresMcp: false,
-    };
+    return runDisabledRecordRefresh(args, preflight);
   }
 
   // ─── : prepare into tmp ────────────────────────────────────────────
@@ -1677,6 +1971,11 @@ async function runThreePhaseUpdate(args: ThreePhaseArgs): Promise<PluginUpdateOu
   // until the user runs reinstall (RECOVERY_PLUGIN_REINSTALL_PREFIX
   // hint). Same recovery contract as reinstall.ts::commitHooks (see
   // WR-05).
+  // D-100-01 / ENBL-10: the supported hook entries version B materialized,
+  // captured at parse time and written by finalize under the same
+  // hooks-success guard as the inventory slug. Stays undefined when version B
+  // declares no hooks, which is the signal to clear the record's description.
+  let hookEntries: readonly HookSummaryEntry[] | undefined;
   try {
     if (preflight.installable.hooksConfigPath === undefined) {
       // Version B has no hooks: remove any stale file from version A.
@@ -1698,6 +1997,8 @@ async function runThreePhaseUpdate(args: ThreePhaseArgs): Promise<PluginUpdateOu
         pluginRoot: preflight.installable.pluginRoot,
         hooksValue: parsed.value,
       });
+      // D-100-02 / ENBL-11: `parsed.value` is the supported subset already.
+      hookEntries = projectHookSummaryEntries(parsed.value);
     }
   } catch (err) {
     phase3aFailures.push({ phase: "hooks", msg: errorMessage(err), cause: err });
@@ -1731,7 +2032,13 @@ async function runThreePhaseUpdate(args: ThreePhaseArgs): Promise<PluginUpdateOu
   // `phase: "finalize"` Phase3Failure member is deferred.
   let invalidConfigWriteBack = false;
   try {
-    const finalizeResult = await finalizeUpdateRecord(args, preflight, handles, phase3aFailures);
+    const finalizeResult = await finalizeUpdateRecord(
+      args,
+      preflight,
+      handles,
+      phase3aFailures,
+      hookEntries,
+    );
     invalidConfigWriteBack = finalizeResult.invalidConfigWriteBack;
   } catch (finalizeErr) {
     phase3aFailures.push({
@@ -1829,8 +2136,16 @@ async function runThreePhaseUpdate(args: ThreePhaseArgs): Promise<PluginUpdateOu
   // staged this update). The renderer probes companion-loaded state via
   // SoftDepProbe and emits `{requires pi-subagents}` / `{requires pi-mcp}`
   // iff (declares AND unloaded).
-  const stagedAgents = handles.agents.result.recorded.map((r) => r.generatedName);
-  const stagedMcpServers = handles.mcp.result.recorded.map((r) => r.generatedName);
+  const stagedAgentNames = handles.agents.result.recorded.map((r) => r.generatedName);
+  const stagedMcpServerNames = handles.mcp.result.recorded.map((r) => r.generatedName);
+  // WARN-01 / WR-12 / D-99-03: the same per-kind degrade collection install and
+  // reinstall make off their ledger handles, read here off the handles the
+  // bridges returned. A component whose SOURCE frontmatter would not parse is
+  // written in synthesized form rather than failing the ledger, so the row
+  // reporting the transition has to be able to name it -- otherwise `list`
+  // renders the record's degraded state one command later over a row that
+  // claimed a clean update.
+  const degradedKinds = collectDegradedKinds(handles);
   await dropPluginCompletionCache(args);
   // S5: an invalid config file silently skipped the write-back while the
   // success notify proceeded. Direct-path callers now surface the abort as a
@@ -1871,10 +2186,20 @@ async function runThreePhaseUpdate(args: ThreePhaseArgs): Promise<PluginUpdateOu
     name: plugin,
     fromVersion,
     toVersion,
-    stagedAgents,
-    stagedMcpServers,
-    declaresAgents: stagedAgents.length > 0,
-    declaresMcp: stagedMcpServers.length > 0,
+    stagedAgentNames,
+    stagedMcpServerNames,
+    declaresAgents: stagedAgentNames.length > 0,
+    declaresMcp: stagedMcpServerNames.length > 0,
+    // Spread only when non-empty: a clean update's outcome keeps the key ABSENT
+    // rather than present-and-empty, so its shape is unchanged (NREG-01).
+    ...(degradedKinds.length > 0 && { degradedKinds }),
+    // SURF-05 / D-63-08 / WR-01: the update re-materializes `hooks/hooks.json`,
+    // so it can introduce a handler declaring `rewakeMessage` / `rewakeSummary`
+    // without `asyncRewake: true` exactly as install, enable and backfill can.
+    // Read off the re-resolved candidate, the same source `enable-disable.ts`
+    // reads. Without this the one verb that INHERITS the signal was the one
+    // verb whose row could never carry it.
+    ...(installable.orphanRewake === true && { orphanRewake: true }),
     // FSTAT-07 / D-66-04: a `--partial` update whose candidate re-resolved
     // `partially-available` degraded it -- carry the dropped kinds so the cascade
     // renders `(partially-installed)` instead of `(updated)`. Empty for a clean
@@ -1894,6 +2219,21 @@ async function runThreePhaseUpdate(args: ThreePhaseArgs): Promise<PluginUpdateOu
       },
     }),
   };
+}
+
+/**
+ * WARN-01 / WR-12 / D-99-03: the component kinds this update staged in degraded
+ * form. Extracted from the success-outcome body so that body stays under the
+ * cognitive-complexity ceiling. Collection order is skill before command, the
+ * same order `malformedReasonsForKinds` enforces on emit.
+ */
+function collectDegradedKinds(handles: PrepHandles): readonly DegradeKind[] {
+  return Array.from(
+    new Set<DegradeKind>([
+      ...(handles.skills.result.degraded.length > 0 ? ["skill" as const] : []),
+      ...(handles.commands.result.degraded.length > 0 ? ["command" as const] : []),
+    ]),
+  );
 }
 
 async function dropPluginCompletionCache(args: ThreePhaseArgs): Promise<void> {
@@ -2037,48 +2377,21 @@ function outcomeToCascadePluginMessage(
   );
   switch (outcome.partition) {
     case "updated":
-      // FSTAT-07 / D-66-04: a `--partial` update whose candidate re-resolved
-      // `partially-available` degraded it -- report `(partially-installed)` with the
-      // dropped-component detail instead of `(updated)`. This reads the LIVE
-      // candidate resolution of the just-completed update -- NOT the persisted
-      // `compatibility.unsupported` record the `list` / non-path `info`
-      // derivers read; they agree here only because the update just wrote that
-      // record. A clean candidate keeps `(updated)` (FSTAT-03 -- no lingering
-      // partial state). partially-installed is a realized transition
-      // (TRANSITION_STATUS_LIST), so it stamps the same info-severity + reload
-      // as the updated row. WR-03: thread `dependencies` (the same
-      // declared-kinds gate the `(updated)` row uses) so the soft-dep
-      // `{requires pi-subagents}` / `{requires pi-mcp}` markers fire on a
-      // degraded update exactly as on a clean one.
-      if (outcome.partialDegrade !== undefined && outcome.partialDegrade.kinds.length > 0) {
-        return {
-          status: "partially-installed",
-          name: outcome.name,
-          scope: target.scope,
-          version: outcome.toVersion,
-          dependencies: outcomeDependencies(outcome.declaresAgents, outcome.declaresMcp),
-          reasons: narrowUnsupportedKinds(outcome.partialDegrade.kinds),
-          // SEV-01: info, raised to warning on a missing declared companion.
-          severity: successSeverity,
-          needsReload: true,
-        };
-      }
-
-      return {
-        status: "updated",
-        name: outcome.name,
-        scope: target.scope,
-        from: outcome.fromVersion,
-        to: outcome.toVersion,
-        // declared kinds drive the renderer-time soft-dep
-        // marker (MSG-SD-3). The renderer narrows on `dependencies`
-        // membership + the notify-time probe.
-        dependencies: outcomeDependencies(outcome.declaresAgents, outcome.declaresMcp),
-        // D-03/D-06: realized update transition -> reloads Pi resources.
-        // SEV-01: info, raised to warning above on a missing declared companion.
-        severity: successSeverity,
-        needsReload: true,
-      };
+      // CR-01: BOTH row forms of this partition -- the clean `(updated)` row and
+      // the FSTAT-07 / D-66-04 dropped-kind `(partially-installed)` row -- are
+      // composed by the shared composer. A mapper that picked the partial form
+      // itself short-circuited past the composer, so the malformed-component
+      // axis WR-12 threaded onto the clean row silently vanished on a
+      // `--partial` update that also degraded a component.
+      //
+      // SEV-01: this surface stamps info raised to warning on a missing declared
+      // companion, on both forms -- an explicit `--partial` opt-in does not
+      // raise on the drop itself (the autoupdate surface, where the user did not
+      // opt in, is the one that raises for that; SEV-03 / D-69-01).
+      return updatedRowFromOutcome(outcome, target.scope, {
+        updated: successSeverity,
+        partiallyInstalled: successSeverity,
+      });
     case "unchanged":
       // Catalog `all-up-to-date-noop` (docs/output-catalog.md:528-532):
       // unchanged renders as `(skipped) {up-to-date}`.
@@ -2150,14 +2463,6 @@ function outcomeToCascadePluginMessage(
       // discriminated union; any future partition must update this switch.
       return assertNever(outcome);
   }
-}
-
-/** Derive the v2 Dependency[] tuple from the outcome's declared kinds. */
-function outcomeDependencies(declaresAgents: boolean, declaresMcp: boolean): readonly Dependency[] {
-  return [
-    ...(declaresAgents ? (["agents"] as const) : []),
-    ...(declaresMcp ? (["mcp"] as const) : []),
-  ];
 }
 
 /**
@@ -2759,35 +3064,4 @@ async function loadCachedMarketplaceManifest(
   manifestPath: string,
 ): Promise<{ name: string; plugins: readonly PluginEntry[] }> {
   return loadMarketplaceManifest(manifestPath);
-}
-
-/**
- * PI-6 cross-plugin guard helper. Returns a shallow-cloned state with the
- * (marketplace, plugin) record removed -- so the guard counts this plugin's
- * OWN current resources as "not yet owned" and only catches conflicts
- * against OTHER plugins.
- *
- * Shallow-clone discipline: deep-clone only the bytes the guard reads
- * (marketplaces -> per-mp -> plugins map). Every other branch reference is
- * shared. This keeps the helper cheap on hot paths.
- */
-function removePluginRecord(
-  state: ExtensionState,
-  marketplace: string,
-  plugin: string,
-): ExtensionState {
-  const cloned: ExtensionState = {
-    schemaVersion: state.schemaVersion,
-    marketplaces: { ...state.marketplaces },
-  };
-  const mp = cloned.marketplaces[marketplace];
-  if (mp === undefined) {
-    return cloned;
-  }
-
-  const newPlugins = { ...mp.plugins };
-  // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- newPlugins is a Record<string,...>.
-  delete newPlugins[plugin];
-  cloned.marketplaces[marketplace] = { ...mp, plugins: newPlugins };
-  return cloned;
 }

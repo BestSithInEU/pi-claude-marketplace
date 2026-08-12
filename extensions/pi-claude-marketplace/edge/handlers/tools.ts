@@ -158,9 +158,9 @@ interface PluginRow {
  */
 export function projectRowStatus(status: PluginNotificationMessage["status"]): ToolPluginStatus {
   switch (status) {
-    // RLD-04 / D-08: the list orchestrator emits the steady-state inventory
-    // row as `installed`; it projects to the same `installed` tool surface as
-    // the cascade transition and the `upgradable` list row.
+    // The list orchestrator emits the steady-state inventory row as
+    // `installed`; it projects to the same `installed` tool surface as the
+    // cascade transition and the `upgradable` list row.
     // FSTAT-02 / FSTAT-04 / D-66-03: both derived partial states flatten to the
     // `installed` tool surface -- a partially-installed plugin is recorded-installed
     // (degraded, but present), and a partially-upgradable plugin is currently a
@@ -324,8 +324,8 @@ function pluginScopeOrFallback(
   marketplaceScope: "user" | "project",
 ): "user" | "project" {
   switch (p.status) {
-    // RLD-04 / D-08: the `installed` inventory row joins `upgradable` as a
-    // scope-bearing list-surface variant.
+    // The `installed` inventory row joins `upgradable` as a scope-bearing
+    // list-surface variant.
     // FSTAT-02 / FSTAT-04 / D-66-03: the derived partial states are scope-bearing
     // list-surface variants (each carries the optional `scope?`), so they join
     // the orphan-fold scope arm.
@@ -364,14 +364,25 @@ function pluginScopeOrFallback(
 
 /**
  * Read `p.reasons` defensively. Only a subset of plugin variants carry the
- * field (D-15-01); for list-surface variants `available` / `installed`
- * omit `reasons` entirely (omit when undefined or empty).
+ * field (D-15-01). INV-05 / D-95-06: every list-surface variant that carries
+ * typed reasons forwards them here, and the field is omitted when the array is
+ * absent or empty -- an agent reading the tool payload sees the same facts a
+ * human reading the rendered row sees.
  */
 function pluginReasons(p: PluginNotificationMessage): readonly string[] | undefined {
+  if (p.status === "installed") {
+    // INV-05: the steady-state inventory row's `reasons` is OPTIONAL, so it
+    // needs an undefined guard the required-`reasons` arms below do not.
+    // Returning `[]` here would put an empty array on a clean row's payload.
+    return p.reasons !== undefined && p.reasons.length > 0 ? p.reasons : undefined;
+  }
+
   if (
     p.status === "unavailable" ||
     p.status === "partially-available" ||
-    p.status === "upgradable"
+    p.status === "upgradable" ||
+    p.status === "partially-installed" ||
+    p.status === "partially-upgradable"
   ) {
     // USTAT-01: the `partially-available` row carries the same per-kind reason braces as
     // the `unavailable` row, so surface them on the tool details too.
@@ -389,8 +400,9 @@ function pluginReasons(p: PluginNotificationMessage): readonly string[] | undefi
  */
 function pluginVersion(p: PluginNotificationMessage): string | undefined {
   switch (p.status) {
-    // RLD-04 / D-08: the `installed` inventory row carries `version?: string`
-    // like the other optional-version variants.
+    // D-15-04: the `installed` inventory row carries `version?: string` like
+    // every other optional-version variant; only `updated` differs, with its
+    // required `from` / `to` pair.
     case "installed":
     case "upgradable":
     case "available":

@@ -103,7 +103,15 @@ async function seedMarketplace(opts: {
   scope: "user" | "project";
   name: string;
   installedPlugins?: { name: string; version: string }[];
-  manifestEntries?: { name: string; source: string; version?: string }[];
+  manifestEntries?: {
+    name: string;
+    source: string;
+    version?: string;
+    /** Declares an unsupported component kind so the entry resolves `partially-available`. */
+    lspServers?: Record<string, unknown>;
+  }[];
+  /** Plugin source dirs created under the marketplace root so resolver probes succeed. */
+  installablePluginDirs?: readonly string[];
 }): Promise<void> {
   const locations = locationsFor(opts.scope, opts.cwd);
   await mkdir(locations.extensionRoot, { recursive: true });
@@ -118,6 +126,10 @@ async function seedMarketplace(opts: {
     manifestPath,
     JSON.stringify({ name: opts.name, plugins: opts.manifestEntries ?? [] }),
   );
+
+  for (const rel of opts.installablePluginDirs ?? []) {
+    await mkdir(path.join(mpRoot, rel), { recursive: true });
+  }
 
   const nowIso = new Date().toISOString();
   const plugins: Record<
@@ -550,8 +562,10 @@ test("pi_claude_marketplace_plugin_list :: force-upgradable row projects to inst
 // `compatibility.unsupported` is non-empty and `installable` is false). The
 // list orchestrator classifies it `force-installed`; `projectRowStatus` flattens
 // it to the coarse `installed` bucket and `pluginVersion` carries the recorded
-// version through. `pluginReasons` OMITS the force-installed row's reasons on
-// the tool surface (only unavailable / unsupported / upgradable carry reasons).
+// version through. INV-05: `pluginReasons` FORWARDS this row's reasons, so the
+// tool payload states the same facts the rendered row does -- the marketplace
+// manifest here loads and declares nothing, so the row carries the absence
+// reason ahead of its dropped-component reason.
 test("pi_claude_marketplace_plugin_list :: force-installed plugin projects [installed] with version through execute", async () => {
   await withHermeticHome(async ({ cwd }) => {
     const mpRoot = await mkdtemp(path.join(tmpdir(), "mp-force-"));
@@ -607,10 +621,20 @@ test("pi_claude_marketplace_plugin_list :: force-installed plugin projects [inst
     const ctx = makeCtx(cwd);
     const out = await tool.execute("call-1", {}, undefined, undefined, ctx);
 
-    // Force-installed flattens to the [installed] tool line.
-    assert.match(out.content[0]!.text, /\[installed\] pforce/);
+    // Force-installed flattens to the [installed] tool line, and INV-05 puts the
+    // reason trailer on the flat line so it states what `details` states.
+    assert.match(
+      out.content[0]!.text,
+      /\[installed\] pforce\s+2\.0\.0\s+\(not in manifest, unsupported component\)/,
+    );
     const details = out.details as {
-      plugins: { name: string; status: string; version?: string; scope: string }[];
+      plugins: {
+        name: string;
+        status: string;
+        version?: string;
+        scope: string;
+        reasons?: readonly string[];
+      }[];
     };
     assert.equal(details.plugins.length, 1);
     assert.equal(details.plugins[0]!.name, "pforce");
@@ -619,6 +643,9 @@ test("pi_claude_marketplace_plugin_list :: force-installed plugin projects [inst
     assert.equal(details.plugins[0]!.version, "2.0.0");
     // pluginScopeOrFallback returns the row scope for the force arm.
     assert.equal(details.plugins[0]!.scope, "project");
+    // INV-05: both reasons reach the agent, in row order -- `themes` is not a
+    // carve-out kind, so it narrows to `unsupported component`.
+    assert.deepEqual(details.plugins[0]!.reasons, ["not in manifest", "unsupported component"]);
 
     await rm(mpRoot, { recursive: true, force: true });
   });
@@ -711,6 +738,104 @@ test("pi_claude_marketplace_plugin_list :: upgradable plugin (manifest version >
     assert.equal(details.plugins[0]!.status, "installed");
     // pluginReasons returns undefined for empty reasons[] (line 337)
     assert.equal(details.plugins[0]!.reasons, undefined);
+  });
+});
+
+// INV-05: a clean, enabled record whose marketplace manifest LOADS but does not
+// declare it. The manifest written here is `{ name, plugins: [] }` -- a
+// successful read of a manifest that declares nothing, not a load failure -- so
+// the row carries the absence reason and the tool payload forwards it.
+test("INV-05 :: a manifest-absent installed record carries [not in manifest] on the tool payload", async () => {
+  await withHermeticHome(async ({ cwd }) => {
+    await seedMarketplace({
+      cwd,
+      scope: "project",
+      name: "absent-mkt",
+      installedPlugins: [{ name: "palone", version: "1.0.0" }],
+    });
+
+    const { pi, registered } = makeMockPi();
+    registerListPluginsTool(pi);
+    const tool = registered.get("pi_claude_marketplace_plugin_list")!;
+    const ctx = makeCtx(cwd);
+    const out = await tool.execute("call-1", { installed: true }, undefined, undefined, ctx);
+
+    // The flat line and the structured payload must state the same fact.
+    assert.match(out.content[0]!.text, /\[installed\] palone\s+1\.0\.0\s+\(not in manifest\)/);
+    const details = out.details as {
+      plugins: { name: string; status: string; version?: string; reasons?: readonly string[] }[];
+    };
+    assert.equal(details.plugins.length, 1);
+    assert.equal(details.plugins[0]!.name, "palone");
+    assert.equal(details.plugins[0]!.status, "installed");
+    assert.equal(details.plugins[0]!.version, "1.0.0");
+    assert.deepEqual(details.plugins[0]!.reasons, ["not in manifest"]);
+  });
+});
+
+// INV-05: the control. The same shape whose manifest DOES declare the record at
+// the installed version keeps no `reasons` field at all, which proves the brace
+// is a property of manifest absence rather than of the installed status.
+test("INV-05 :: a manifest-declared installed record projects with no reasons field", async () => {
+  await withHermeticHome(async ({ cwd }) => {
+    await seedMarketplace({
+      cwd,
+      scope: "project",
+      name: "declared-mkt",
+      installedPlugins: [{ name: "palone", version: "1.0.0" }],
+      manifestEntries: [{ name: "palone", source: "./plugins/palone", version: "1.0.0" }],
+    });
+
+    const { pi, registered } = makeMockPi();
+    registerListPluginsTool(pi);
+    const tool = registered.get("pi_claude_marketplace_plugin_list")!;
+    const ctx = makeCtx(cwd);
+    const out = await tool.execute("call-1", { installed: true }, undefined, undefined, ctx);
+
+    assert.doesNotMatch(out.content[0]!.text, /not in manifest/);
+    const details = out.details as {
+      plugins: { name: string; status: string; reasons?: readonly string[] }[];
+    };
+    assert.equal(details.plugins.length, 1);
+    assert.equal(details.plugins[0]!.name, "palone");
+    assert.equal(details.plugins[0]!.status, "installed");
+    assert.equal(details.plugins[0]!.reasons, undefined);
+  });
+});
+
+// INV-05: `partially-upgradable` is the fourth arm `projectRowStatus` flattens
+// onto the coarse `installed` tool bucket. Its `reasons` are REQUIRED, and the
+// upgrade candidate's dropped kinds are exactly the fact an agent needs to
+// decide whether proposing `update` is safe, so the payload must forward them.
+test("INV-05 :: a partially-upgradable record forwards its candidate's dropped kinds", async () => {
+  await withHermeticHome(async ({ cwd }) => {
+    await seedMarketplace({
+      cwd,
+      scope: "project",
+      name: "fup-mkt",
+      installedPlugins: [{ name: "fup", version: "1.0.0" }],
+      // Newer candidate declaring an unsupported kind: the installed record is
+      // clean, the candidate resolves `partially-available`, so the derived row
+      // status is `partially-upgradable`.
+      manifestEntries: [{ name: "fup", source: "./fup", version: "1.0.1", lspServers: { ls: {} } }],
+      installablePluginDirs: ["fup"],
+    });
+
+    const { pi, registered } = makeMockPi();
+    registerListPluginsTool(pi);
+    const tool = registered.get("pi_claude_marketplace_plugin_list")!;
+    const ctx = makeCtx(cwd);
+    const out = await tool.execute("call-1", { installed: true }, undefined, undefined, ctx);
+
+    assert.match(out.content[0]!.text, /\[installed\] fup\s+1\.0\.0\s+\(lsp\)/);
+    const details = out.details as {
+      plugins: { name: string; status: string; version?: string; reasons?: readonly string[] }[];
+    };
+    assert.equal(details.plugins.length, 1);
+    assert.equal(details.plugins[0]!.name, "fup");
+    assert.equal(details.plugins[0]!.status, "installed");
+    assert.equal(details.plugins[0]!.version, "1.0.0");
+    assert.deepEqual(details.plugins[0]!.reasons, ["lsp"]);
   });
 });
 

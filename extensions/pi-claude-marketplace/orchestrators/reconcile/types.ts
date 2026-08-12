@@ -14,10 +14,11 @@
 //   4. `pluginsToUninstall`   -- recorded but not declared
 //   5. `pluginsToEnable`      -- recorded-but-disabled plugins paired with
 //                                a config entry that has `enabled !== false`
-//                                (recorded-but-disabled marker is "all four
-//                                resources arrays empty AND
-//                                installable: true" -- see
-//                                plan.ts::isRecordedButDisabled)
+//                                (the recorded-but-disabled marker is the
+//                                record's explicit `enabled: false` boolean
+//                                alone -- see
+//                                persistence/state-io.ts::isRecordedButDisabled;
+//                                availability is an orthogonal axis)
 //   6. `pluginsToDisable`     -- declared with `enabled === false` but
 //                                still recorded
 //   7. `sourceMismatches`     -- four per-cause planner diagnostics
@@ -93,13 +94,16 @@ export interface PlannedPluginUninstall {
 /**
  * Planned enable of a plugin declared+enabled but locally disabled in state.
  *
- * ENBL-02: the planner detects a "currently disabled"
- * recorded plugin via the empty-resources marker -- all four
- * `resources.{skills,prompts,agents,mcpServers}` arrays empty (A1; SPLIT-01
- * preserved, no schema bump). When such a record is paired with a config
- * entry that has `enabled !== false`, the entry lands in this bucket so
- * the apply path can re-materialize the artifacts from cache (no
- * network, NFR-5).
+ * ENBL-05: the planner detects a "currently disabled" recorded plugin through
+ * `state-io.ts::isRecordedButDisabled`, which reads the explicit `enabled`
+ * boolean and NOTHING else. The emptied `resources.*` arrays are a consequence
+ * of disabling, never the marker, and `compatibility.installable` is an
+ * orthogonal availability axis -- an earlier two-axis marker intersected both
+ * and excluded exactly the disabled-partial record (ENBL-04 violation).
+ *
+ * When such a record is paired with a config entry that has `enabled !== false`,
+ * the entry lands in this bucket so the apply path can re-materialize the
+ * artifacts from cache (no network, NFR-5).
  */
 export interface PlannedPluginEnable {
   readonly scope: Scope;

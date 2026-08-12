@@ -96,7 +96,7 @@ import {
   prepareStageSkills,
   unstagePluginSkills,
 } from "../../bridges/skills/index.ts";
-import { parseHooksConfig } from "../../domain/components/hooks.ts";
+import { parseHooksConfig, projectHookSummaryEntries } from "../../domain/components/hooks.ts";
 import { PLUGIN_ENTRY_VALIDATOR } from "../../domain/components/plugin.ts";
 import { loadMarketplaceManifest } from "../../domain/manifest.ts";
 import { asAbsolutePluginRoot } from "../../domain/plugin-root.ts";
@@ -146,10 +146,12 @@ import {
   assertNoCrossPluginConflicts,
   cloneMarketplaceRecordForTargetScope,
   pickAgentsSourceDir,
+  removePluginRecord,
   resolveInstallMarketplaceSource,
   resolvePluginVersion,
   selectConfigWriteTarget,
   synthesizeAdoptedMarketplaceSource,
+  type LedgerDegradationSignals,
 } from "./shared.ts";
 
 import type { PreparedAgentsStaging } from "../../bridges/agents/index.ts";
@@ -163,6 +165,7 @@ import type { ScopeConfig } from "../../persistence/config-io.ts";
 import type { ScopedLocations } from "../../persistence/locations.ts";
 import type { ExtensionState } from "../../persistence/state-io.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../platform/pi-api.ts";
+import type { HookSummaryEntry } from "../../shared/concerns/hooks.ts";
 import type { Dependency } from "../../shared/concerns/soft-dep.ts";
 import type {
   ContentReason,
@@ -219,24 +222,42 @@ interface EntityErrorRow {
  * remain (consumed by `orchestrators/import/execute.ts` for its
  * cascade-row composition) -- NFR-7's discriminated-outcome contract
  * is unchanged.
+ *
+ * IN-07 / D-98-01: the `installed` arm INTERSECTS the shared
+ * `LedgerDegradationSignals` shape rather than re-declaring the ledger's
+ * degradation fields, so the enable branch and this one read ONE vocabulary for
+ * the same ledger run. Each field is omitted when empty, so a clean install's
+ * outcome shape is unchanged (NREG-01).
+ *
+ * WR-03: the intersection EXCLUDES the two staged-count verdicts, and every
+ * field it keeps is populated below. WR-11: the type operator is an EXCLUSION,
+ * so it cannot state that second half on its own -- a signal added to the shared
+ * shape would widen this arm with a field nothing here writes. The key set is
+ * pinned bidirectionally by `COMPAT-01: the install outcome inherits exactly the
+ * signals installPlugin populates` in
+ * `tests/architecture/compat-01-no-expansion.test.ts`, which stops compiling on
+ * either a widening or a narrowing. Each field of the shared shape is optional,
+ * so intersecting all five never made a missing one a compile error -- it only
+ * advertised `stagedAgents` / `stagedMcpServers` that `installPlugin` never
+ * writes, which a consumer reads as `undefined` and takes for "no agents
+ * staged". Those two facts already ride the REQUIRED `declaresAgents` /
+ * `declaresMcp` predicates below (consumed by `orchestrators/import/execute.ts`
+ * and the reconcile projection), so excluding the optional twins removes a
+ * duplicate vocabulary rather than a signal. The dropped-component
+ * `unsupported` kind list stays and is populated: an install admitted through
+ * the partial gate drops component kinds, and an outcome silent about them would
+ * contradict the `(partially-installed)` row `list` renders one command later --
+ * the same contradiction the shared shape exists to prevent on the enable side.
  */
 export type InstallPluginOutcome =
-  | {
+  | ({
       readonly status: "installed";
       readonly resourcesChanged: boolean;
       readonly declaresAgents: boolean;
       readonly declaresMcp: boolean;
       /** Post-commit warnings collected in orchestrated mode instead of firing individually. */
       readonly postCommitWarnings?: readonly string[];
-      /**
-       * WARN-01 / D-86-03: the component kinds that degraded on a
-       * frontmatter-parse failure (synthesized skill / neutralized command).
-       * The orchestrated reconcile composer reads this to push the
-       * `{malformed skill}` / `{malformed command}` token onto its installed
-       * row. Absent when nothing degraded.
-       */
-      readonly degradedKinds?: readonly DegradeKind[];
-    }
+    } & Omit<LedgerDegradationSignals, "stagedAgents" | "stagedMcpServers">)
   | {
       /**
        * Collapsed failure shape. All failure variants (`already-installed`,
@@ -375,6 +396,10 @@ interface InstallCtx {
   // the atomic write). Track whether the file was written so the phase undo
   // path knows whether to call removeHookConfig.
   hooksFileWritten: boolean;
+  // D-100-01 / ENBL-10: the supported hook entries the hooks phase
+  // materialized, carried to the state phase for the record's `hookEntries`.
+  // Stays undefined when the resolver advertises no hooks config.
+  hookEntries?: readonly HookSummaryEntry[];
   // Names captured for PluginInstallRecord.resources and reload-hint composition.
   stagedSkillNames: readonly string[];
   stagedCommandNames: readonly string[];
@@ -841,7 +866,20 @@ export async function runInstallLedger(
   // PI-6 / RN-3: pre-flight cross-bridge conflict guard. Throws
   // CrossPluginConflictError BEFORE any disk write if a generated name
   // is already owned by a different plugin IN THE SAME SCOPE.
-  assertNoCrossPluginConflicts(scope, generatedNames, state);
+  //
+  // ENBL-19: check against the state EXCLUDING this plugin's own recorded
+  // resources, exactly as `update` and `reinstall` already do -- re-installing
+  // your own plugin over your own record must not count as a cross-plugin
+  // conflict. Applied unconditionally: a fresh install has no record, so the
+  // exclusion is a no-op there; the enable path reaches this call through
+  // `runEnableBranch` and a disabled record now RETAINS its inventory
+  // (ENBL-18), so without the exclusion every enable of a plugin owning at
+  // least one skill, command or agent would self-conflict.
+  assertNoCrossPluginConflicts(
+    scope,
+    generatedNames,
+    removePluginRecord(state, marketplace, plugin),
+  );
 
   // PI-7 version precedence. D-54-01 / ENBL-02: `pinVersionOverride` (the
   // enable branch) always wins -- an enable re-materialization reuses the
@@ -1056,6 +1094,10 @@ export async function runInstallLedger(
         hooksValue: parsed.value,
       });
       c.hooksFileWritten = true;
+      // D-100-01 / D-100-02 / ENBL-11: describe the hooks this install
+      // materialized. `parsed.value` is already the supported subset, so the
+      // projection is byte-parity with the hooks line `info` renders.
+      c.hookEntries = projectHookSummaryEntries(parsed.value);
     },
     undo: async (c) => {
       if (!c.hooksFileWritten) {
@@ -1140,6 +1182,10 @@ export async function runInstallLedger(
         // full sha; clone GC presence-checks it to derive live clone keys).
         // Path / github-name installs omit it.
         ...(c.resolvedSha !== undefined && { resolvedSha: c.resolvedSha }),
+        // D-100-01 / ENBL-10: describe the hooks the install materialized, so
+        // a later `info` need not read the config back off disk. Omitted when
+        // the plugin declares no hooks config -- there is nothing to describe.
+        ...(c.hookEntries !== undefined && { hookEntries: [...c.hookEntries] }),
         compatibility: {
           // INV-1 / D-66-01 / BFILL-01: record the REAL compatibility from the
           // resolve, not a hardcoded `true`. A `--partial` install of an
@@ -1861,6 +1907,19 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
     declaresAgents: installCtx.stagedAgentNames.length > 0,
     declaresMcp: installCtx.stagedMcpServerNames.length > 0,
     ...(postCommitWarnings.length > 0 && { postCommitWarnings }),
+    // WR-03: the LIVE dropped-component kinds, read off the ledger's own
+    // resolution exactly as the standalone row above reads them. An install
+    // admitted through the partial gate materializes a degraded plugin, so an
+    // outcome that stayed silent about it would hand an orchestrated caller the
+    // facts for a bare `(installed)` row over a record whose `list` row reads
+    // `(partially-installed)`. Omitted on a clean install (NREG-01).
+    ...(installCtx.resolved.state === "partially-available" && {
+      unsupported: [...installCtx.resolved.unsupported],
+    }),
+    // SURF-05 / D-63-08 / IN-07: the same orphan-rewake fact the standalone row
+    // above reports, carried on the outcome so the orchestrated reconcile
+    // projection can name it too. Omitted when false (NREG-01).
+    ...(installCtx.resolved.orphanRewake === true && { orphanRewake: true }),
     ...(degradedKinds.length > 0 && { degradedKinds }),
   };
 }

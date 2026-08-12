@@ -145,7 +145,13 @@ async function seedFullPlugin(
   marketplace: string,
   plugin: string,
   cwd: string,
-): Promise<{ skillDir: string; commandFile: string; agentFile: string; mcpJson: string }> {
+): Promise<{
+  skillDir: string;
+  commandFile: string;
+  agentFile: string;
+  hooksFile: string;
+  mcpJson: string;
+}> {
   await mkdir(locations.extensionRoot, { recursive: true });
 
   // skill: <skillsTargetDir>/<name>/SKILL.md
@@ -182,6 +188,12 @@ async function seedFullPlugin(
   };
   await atomicWriteJson(locations.agentsIndexPath, agentsIndex);
 
+  // hooks: <hooksDir>/<plugin>/hooks.json -- the path shape hookConfigPathFor
+  // composes, which is what removeHookConfig removes on the cascade's 5th arm.
+  const hooksFile = path.join(locations.hooksDir, plugin, "hooks.json");
+  await mkdir(path.dirname(hooksFile), { recursive: true });
+  await writeFile(hooksFile, JSON.stringify({ hooks: {} }));
+
   // mcp: <scopeRoot>/mcp.json with one owned server
   const mcpServerName = "uni-server";
   const mcpJson = locations.mcpJsonPath;
@@ -208,6 +220,9 @@ async function seedFullPlugin(
         scope: locations.scope,
         source: pathSource("./src"),
         addedFromCwd: cwd,
+        // LIFE-04: nothing writes a marketplace.json under this cwd, so the
+        // recorded manifest path never exists. Uninstall reads no manifest and
+        // no resolver -- the installation record alone drives the cascade.
         manifestPath: path.join(cwd, "marketplace.json"),
         marketplaceRoot: cwd,
         plugins: {
@@ -216,13 +231,14 @@ async function seedFullPlugin(
             prompts: ["uni-cmd"],
             agents: [agentName],
             mcpServers: [mcpServerName],
+            hooks: [plugin],
           }),
         },
       },
     },
   });
 
-  return { skillDir, commandFile, agentFile, mcpJson };
+  return { skillDir, commandFile, agentFile, hooksFile, mcpJson };
 }
 
 // PU-1 + PU-8 (success path, hint emitted) ---------------------------
@@ -2294,6 +2310,204 @@ test("D-19-01: a clone-GC throw (plugin-clones path is a FILE) is swallowed -- t
         notifications[0]?.message,
         "● mp [project]\n  ○ hello v0.0.1 (uninstalled)\n\n/reload to pick up changes",
       );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+// LIFE-04: manifest-absent uninstall, one resource kind per case -------
+//
+// The installation record -- not the marketplace manifest -- drives
+// uninstall: uninstall.ts imports no manifest module and no resolver, so a
+// plugin whose marketplace entry is gone stays fully uninstallable. Each
+// case below asserts the recorded manifest path does NOT exist before the
+// call (the fact that makes this LIFE-04 coverage rather than ordinary
+// uninstall coverage), then asserts exactly ONE resource kind's artifact is
+// gone. D-98-12 chose per-kind isolation over fixture economy: a regression
+// in one bridge arm turns exactly one case red and names the arm.
+
+/** The `(uninstalled)` row bytes, identical to the form PU-1 pins. The
+ *  resource-kind mix does not change the row, so every case shares it. */
+const LIFE_04_UNINSTALLED_ROW =
+  "● mp [project]\n  ○ hello v0.0.1 (uninstalled)\n\n/reload to pick up changes";
+
+/** The seeded manifest path, which no fixture ever writes. */
+function manifestPathFor(cwd: string): string {
+  return path.join(cwd, "marketplace.json");
+}
+
+test("LIFE-04: manifest-absent uninstall removes the skill directory", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "uninstall-life04-skills-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      const seeded = await seedFullPlugin(locations, "mp", "hello", cwd);
+      assert.equal(await pathExists(manifestPathFor(cwd)), false, "manifest absent before call");
+
+      const { ctx, pi, notifications } = makeCtx();
+      await uninstallPlugin({ ctx, pi, scope: "project", cwd, marketplace: "mp", plugin: "hello" });
+
+      assert.equal(await pathExists(seeded.skillDir), false, "skill dir removed");
+      const after = await loadState(locations.extensionRoot);
+      assert.equal("hello" in (after.marketplaces["mp"]?.plugins ?? {}), false, "record removed");
+      assert.equal(notifications.length, 1);
+      assert.equal(notifications[0]?.message, LIFE_04_UNINSTALLED_ROW);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("LIFE-04: manifest-absent uninstall removes the command file", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "uninstall-life04-commands-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      const seeded = await seedFullPlugin(locations, "mp", "hello", cwd);
+      assert.equal(await pathExists(manifestPathFor(cwd)), false, "manifest absent before call");
+
+      const { ctx, pi, notifications } = makeCtx();
+      await uninstallPlugin({ ctx, pi, scope: "project", cwd, marketplace: "mp", plugin: "hello" });
+
+      assert.equal(await pathExists(seeded.commandFile), false, "command file removed");
+      const after = await loadState(locations.extensionRoot);
+      assert.equal("hello" in (after.marketplaces["mp"]?.plugins ?? {}), false, "record removed");
+      assert.equal(notifications.length, 1);
+      assert.equal(notifications[0]?.message, LIFE_04_UNINSTALLED_ROW);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("LIFE-04: manifest-absent uninstall removes the agent file and its index row", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "uninstall-life04-agents-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      const seeded = await seedFullPlugin(locations, "mp", "hello", cwd);
+      assert.equal(await pathExists(manifestPathFor(cwd)), false, "manifest absent before call");
+
+      const { ctx, pi, notifications } = makeCtx();
+      await uninstallPlugin({ ctx, pi, scope: "project", cwd, marketplace: "mp", plugin: "hello" });
+
+      // The agents bridge owns two artifacts per agent -- the file and the
+      // index row -- so this case asserts both halves of its cleanup.
+      assert.equal(await pathExists(seeded.agentFile), false, "agent file removed");
+      const loadedIdx = await loadAgentsIndex(locations);
+      assert.equal(loadedIdx.agents.length, 0, "agents-index row removed");
+
+      const after = await loadState(locations.extensionRoot);
+      assert.equal("hello" in (after.marketplaces["mp"]?.plugins ?? {}), false, "record removed");
+      assert.equal(notifications.length, 1);
+      assert.equal(notifications[0]?.message, LIFE_04_UNINSTALLED_ROW);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("LIFE-04: manifest-absent uninstall removes the staged hooks config", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "uninstall-life04-hooks-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      const seeded = await seedFullPlugin(locations, "mp", "hello", cwd);
+      assert.equal(await pathExists(manifestPathFor(cwd)), false, "manifest absent before call");
+
+      const { ctx, pi, notifications } = makeCtx();
+      await uninstallPlugin({ ctx, pi, scope: "project", cwd, marketplace: "mp", plugin: "hello" });
+
+      assert.equal(await pathExists(seeded.hooksFile), false, "staged hooks config removed");
+      // Removal is confined to the plugin's own hooks directory; the sibling
+      // locations bundle is untouched.
+      assert.ok(await pathExists(locations.extensionRoot), "extension root retained");
+
+      const after = await loadState(locations.extensionRoot);
+      assert.equal("hello" in (after.marketplaces["mp"]?.plugins ?? {}), false, "record removed");
+      assert.equal(notifications.length, 1);
+      assert.equal(notifications[0]?.message, LIFE_04_UNINSTALLED_ROW);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("LIFE-04: manifest-absent uninstall removes only the owned mcp.json server", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "uninstall-life04-mcp-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      const seeded = await seedFullPlugin(locations, "mp", "hello", cwd);
+      assert.equal(await pathExists(manifestPathFor(cwd)), false, "manifest absent before call");
+
+      // A second server carrying a DIFFERENT owning-plugin marker. Uninstall
+      // removes only the keys the record owns; a document-clobbering rewrite
+      // would pass the "owned key gone" assertion and fail this one.
+      const seededDoc = JSON.parse(await readFile(seeded.mcpJson, "utf8")) as {
+        mcpServers: Record<string, unknown>;
+      };
+      seededDoc.mcpServers["foreign-server"] = {
+        command: "node",
+        args: ["foreign.js"],
+        _piClaudeMarketplace: { plugin: "other-plugin", marketplace: "mp" },
+      };
+      await writeFile(seeded.mcpJson, JSON.stringify(seededDoc));
+
+      const { ctx, pi, notifications } = makeCtx();
+      await uninstallPlugin({ ctx, pi, scope: "project", cwd, marketplace: "mp", plugin: "hello" });
+
+      const afterDoc = JSON.parse(await readFile(seeded.mcpJson, "utf8")) as {
+        mcpServers: Record<string, unknown>;
+      };
+      assert.equal("uni-server" in afterDoc.mcpServers, false, "owned server key removed");
+      assert.ok("foreign-server" in afterDoc.mcpServers, "differently-owned server key retained");
+
+      const after = await loadState(locations.extensionRoot);
+      assert.equal("hello" in (after.marketplaces["mp"]?.plugins ?? {}), false, "record removed");
+      assert.equal(notifications.length, 1);
+      assert.equal(notifications[0]?.message, LIFE_04_UNINSTALLED_ROW);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("LIFE-04: manifest-absent uninstall of a record with no resources still converges", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "uninstall-life04-empty-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      // An inventory record with nothing on disk -- the shape a disabled
+      // record persists -- is the input most likely to be mishandled by an
+      // unguarded loop. Seeded directly because seedFullPlugin pre-stages
+      // artifacts; every real cascade arm therefore runs against empty input.
+      await seedState(locations.extensionRoot, {
+        schemaVersion: 1,
+        marketplaces: {
+          mp: {
+            name: "mp",
+            scope: "project",
+            source: pathSource("./src"),
+            addedFromCwd: cwd,
+            manifestPath: manifestPathFor(cwd),
+            marketplaceRoot: cwd,
+            plugins: { hello: makePluginRecord() },
+          },
+        },
+      });
+      assert.equal(await pathExists(manifestPathFor(cwd)), false, "manifest absent before call");
+
+      const { ctx, pi, notifications } = makeCtx();
+      await assert.doesNotReject(
+        uninstallPlugin({ ctx, pi, scope: "project", cwd, marketplace: "mp", plugin: "hello" }),
+      );
+
+      const after = await loadState(locations.extensionRoot);
+      assert.equal("hello" in (after.marketplaces["mp"]?.plugins ?? {}), false, "record removed");
+      assert.equal(notifications.length, 1);
+      assert.equal(notifications[0]?.message, LIFE_04_UNINSTALLED_ROW);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

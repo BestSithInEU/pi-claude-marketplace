@@ -20,6 +20,7 @@ import {
   type InstallCloneCacheSeam,
 } from "../../../extensions/pi-claude-marketplace/orchestrators/plugin/install.ts";
 import {
+  __test_clonePluginRecord,
   __test_errorWithManualRecovery,
   __test_findManualRecoveryError,
   __test_outcomeToPluginMessage,
@@ -340,8 +341,8 @@ test("PRL-08/11 happy: success preserves installed version, restages resources, 
       assert.equal(outcome.partition, "reinstalled");
       assert.equal(outcome.version, "1.0.0");
       assert.equal(outcome.resourcesChanged, true);
-      assert.deepEqual(outcome.stagedAgents, [`${GENERATED_AGENT_PREFIX}hello-bot`]);
-      assert.deepEqual(outcome.stagedMcpServers, ["server1"]);
+      assert.deepEqual(outcome.stagedAgentNames, [`${GENERATED_AGENT_PREFIX}hello-bot`]);
+      assert.deepEqual(outcome.stagedMcpServerNames, ["server1"]);
       const record = (await loadState(locations.extensionRoot)).marketplaces["mp"]?.plugins[
         "hello"
       ];
@@ -1560,8 +1561,8 @@ test("D-19-02: manual-recovery outcome folds into cascade plugins[] as PluginMan
       marketplace: "mp",
       scope: "project",
       version: "1.0.0",
-      stagedAgents: [],
-      stagedMcpServers: [],
+      stagedAgentNames: [],
+      stagedMcpServerNames: [],
       declaresAgents: false,
       declaresMcp: false,
       resourcesChanged: true,
@@ -3474,4 +3475,369 @@ test("SUB-02: user-scope reinstall keeps ${CLAUDE_PROJECT_DIR} literal in skill,
       await rm(cwd, { recursive: true, force: true });
     }
   });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// WARN-01 / WR-04: the reinstall outcome carries the degraded-component kinds
+// ──────────────────────────────────────────────────────────────────────────
+
+test("WR-04: a reinstall whose source frontmatter no longer parses reports the degraded kind on its outcome", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "reinstall-wr04-degraded-"));
+    try {
+      const seeded = await seedMarketplace({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        resources: { skill: "old skill" },
+        install: true,
+      });
+
+      // Break the skill's frontmatter at the SOURCE. The bridge installs it in
+      // degraded form rather than failing, which is the fact the outcome has to
+      // carry: the load-time backfill drives this same primitive, and a row that
+      // named nothing would contradict the ledger that produced it.
+      await writeFile(
+        path.join(seeded.pluginRoot, "skills", "tool", "SKILL.md"),
+        "---\nname: [unterminated\n---\n\n# Bad\nBody.\n",
+      );
+
+      const { ctx, pi } = makeCtx();
+      const outcome = await reinstallPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "hello",
+      });
+
+      assert.equal(outcome.partition, "reinstalled");
+      assert.ok(outcome.partition === "reinstalled");
+      assert.deepEqual([...(outcome.degradedKinds ?? [])], ["skill"]);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("WR-09: the standalone reinstall row names the degraded kind and takes the warning raise", async () => {
+  // The outcome-level case above proves the signal is COLLECTED. This one proves
+  // the verb's own row READS it. `install`, standalone `enable`, and both
+  // reconcile projections already name the kind; a bare `(reinstalled)` row here
+  // would contradict the `(partially-installed)`-class record `list` renders one
+  // command later -- the same contradiction the shared signal shape exists to
+  // prevent, one surface over.
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "reinstall-wr09-row-"));
+    try {
+      const seeded = await seedMarketplace({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        resources: { skill: "old skill" },
+        install: true,
+      });
+
+      await writeFile(
+        path.join(seeded.pluginRoot, "skills", "tool", "SKILL.md"),
+        "---\nname: [unterminated\n---\n\n# Bad\nBody.\n",
+      );
+
+      const { ctx, pi, notifications } = makeCtx();
+      await reinstallPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "hello",
+      });
+
+      const first = notifications[0];
+      assert.ok(first !== undefined);
+      assert.equal(
+        first.message,
+        [
+          "A plugin operation needs attention.",
+          "",
+          "● mp [project]",
+          "  ● hello v1.0.0 (reinstalled) {malformed skill}",
+          "",
+          "/reload to pick up changes",
+        ].join("\n"),
+      );
+      // WARN-01: the raise reaches the Pi API severity argument, not just the
+      // summary line.
+      assert.equal(first.severity, "warning");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("WR-09: a clean reinstall row is byte-identical to before -- no brace, no raise", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "reinstall-wr09-clean-"));
+    try {
+      await seedMarketplace({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        resources: { skill: "old skill" },
+        install: true,
+      });
+
+      const { ctx, pi, notifications } = makeCtx();
+      await reinstallPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "hello",
+      });
+
+      const first = notifications[0];
+      assert.ok(first !== undefined);
+      assert.equal(
+        first.message,
+        ["● mp [project]", "  ● hello v1.0.0 (reinstalled)", "", "/reload to pick up changes"].join(
+          "\n",
+        ),
+      );
+      assert.equal(first.severity, undefined);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("WR-09: the bulk cascade mapper composes the same brace and raise as the standalone row", () => {
+  // reinstall has TWO row composers -- the standalone verb's and this cascade
+  // mapper -- and they read the same outcome. One naming the degrade while the
+  // other renders a bare success row would be the very drift the shared signal
+  // exists to close, so the mapper is pinned beside the verb.
+  const degraded = __test_outcomeToPluginMessage(
+    {
+      partition: "reinstalled",
+      name: "good",
+      marketplace: "mp",
+      scope: "project",
+      version: "1.0.0",
+      stagedAgentNames: [],
+      stagedMcpServerNames: [],
+      declaresAgents: false,
+      declaresMcp: false,
+      resourcesChanged: true,
+      degradedKinds: ["skill"],
+    },
+    "project",
+  );
+  assert.equal(degraded.status, "reinstalled");
+  assert.ok(degraded.status === "reinstalled");
+  assert.deepEqual([...(degraded.reasons ?? [])], ["malformed skill"]);
+  assert.equal(degraded.severity, "warning");
+
+  // And the clean arm keeps the field absent, not present-and-empty: an empty
+  // array would render the same today but is a different shape to reason about.
+  const clean = __test_outcomeToPluginMessage(
+    {
+      partition: "reinstalled",
+      name: "good",
+      marketplace: "mp",
+      scope: "project",
+      version: "1.0.0",
+      stagedAgentNames: [],
+      stagedMcpServerNames: [],
+      declaresAgents: false,
+      declaresMcp: false,
+      resourcesChanged: true,
+    },
+    "project",
+  );
+  assert.equal(Object.hasOwn(clean, "reasons"), false);
+  assert.equal(clean.severity, "info");
+});
+
+test("WR-04: a clean reinstall omits the degraded-kinds field entirely", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "reinstall-wr04-clean-"));
+    try {
+      await seedMarketplace({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        resources: { skill: "old skill", command: "old command" },
+        install: true,
+      });
+
+      const { ctx, pi } = makeCtx();
+      const outcome = await reinstallPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "hello",
+      });
+
+      assert.ok(outcome.partition === "reinstalled");
+      assert.equal(Object.hasOwn(outcome, "degradedKinds"), false);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Rare failure arms (D-99-05b). Each case reaches one arm no happy-path test
+// touches, and asserts the arm's observable consequence.
+// ───────────────────────────────────────────────────────────────────────────
+
+test("S5: a reinstall whose config write-back cannot parse reports the skip beside the success", async () => {
+  // The artifacts reinstall and the config entry does NOT get written. Pre-S5
+  // that second half was silent, so the config and the disk drifted with no
+  // trace. The row must name the config file by basename only -- an absolute
+  // path in an operator-facing row leaks the scope root.
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "reinstall-s5-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      await seedMarketplace({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        resources: { skill: "old skill", command: "old command" },
+        install: true,
+      });
+      await writeFile(locations.configJsonPath, "{ not json ", "utf8");
+
+      const { ctx, pi, notifications } = makeCtx();
+      const outcome = await reinstallPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "hello",
+      });
+
+      assert.equal(outcome.partition, "reinstalled", "the artifacts still reinstall");
+      const allText = notifications.map((n) => n.message).join("\n");
+      assert.match(allText, /\(reinstalled\)/, `success row still emitted in:\n${allText}`);
+      assert.match(allText, /\(failed\) \{invalid manifest\}/, `no S5 row in:\n${allText}`);
+      assert.match(allText, /claude-plugins\.json/, `basename missing in:\n${allText}`);
+      assert.ok(
+        !allText.includes(locations.configJsonPath),
+        `the absolute config path must not leak: ${allText}`,
+      );
+      assert.ok(
+        notifications.some((n) => n.severity === "error"),
+        "the skipped write-back is an error severity, not a silent success",
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("PRL-10: a source that stopped being installable fails with the typed reason, not the substring fallback", async () => {
+  // The manifest entry's source is rewritten to a git-flavored URL after the
+  // path-source install. requireInstallable raises a typed shape error, and
+  // the reason must come from that shape -- the notes-substring fallback would
+  // land on the permissive `not in manifest` and misdescribe the failure.
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "reinstall-shape-"));
+    try {
+      const marketplaceRoot = path.join(cwd, "mp-src");
+      const { manifestPath } = await seedMarketplace({
+        cwd,
+        marketplaceRoot,
+        resources: { skill: "old skill" },
+        install: true,
+      });
+
+      await writeFile(
+        manifestPath,
+        JSON.stringify({
+          name: "mp",
+          plugins: [{ name: "hello", version: "1.0.0", source: { source: "unsupported-kind" } }],
+        }),
+        "utf8",
+      );
+
+      const { ctx, pi, notifications } = makeCtx();
+      const outcome = await reinstallPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "hello",
+      });
+
+      assert.equal(outcome.partition, "failed");
+      const allText = notifications.map((n) => n.message).join("\n");
+      assert.doesNotMatch(
+        allText,
+        /\{not in manifest\}/,
+        `the substring fallback must not win over the typed shape in:\n${allText}`,
+      );
+      // The shape switch maps `not-installable` to the source-classification
+      // reason, which is the fact the operator needs: the entry now points at
+      // a kind this install cannot be reproduced from.
+      assert.match(
+        allText,
+        /⊘ hello \(failed\) \{source mismatch\}/,
+        `the typed shape reason must reach the row in:\n${allText}`,
+      );
+      assert.equal(errorNotifications(notifications).length, 1);
+
+      // A failed reinstall leaves the installed record and its artifacts alone.
+      const after = await loadState(locationsFor("project", cwd).extensionRoot);
+      assert.ok(after.marketplaces["mp"]?.plugins["hello"] !== undefined);
+      assert.match(await readSkill(cwd), /old skill/);
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+// D-100-01 / ENBL-10: `clonePluginRecord` enumerates the record's fields
+// rather than spreading it, so a key it forgets vanishes from the old-record
+// snapshot silently -- no compile error, no failing assertion elsewhere. These
+// two clauses are the alarm for the hook description specifically.
+test("D-100-01 / ENBL-10: the reinstall old-record snapshot preserves hookEntries", () => {
+  const record = {
+    version: "sha-a1b2c3d4e5f6",
+    resolvedSource: "/plugins/hello",
+    hookEntries: [{ event: "PreToolUse", matcher: "Bash" }, { event: "SessionStart" }],
+    compatibility: { installable: true, notes: [], supported: [], unsupported: [] },
+    resources: { skills: [], prompts: [], agents: [], mcpServers: [], hooks: ["hello"] },
+    enabled: true,
+    installedAt: "2025-01-01T00:00:00.000Z",
+    updatedAt: "2025-01-01T00:00:00.000Z",
+  };
+
+  const snapshot = __test_clonePluginRecord(record);
+
+  assert.deepEqual(snapshot.hookEntries, [
+    { event: "PreToolUse", matcher: "Bash" },
+    { event: "SessionStart" },
+  ]);
+  // Deep copy, not an alias: the snapshot is read after the live record has
+  // been overwritten in place, so a shared element would report the new value.
+  assert.notEqual(snapshot.hookEntries?.[0], record.hookEntries[0]);
+});
+
+test("D-100-01 / ENBL-10: a record with no hookEntries clones without inventing the key", () => {
+  const record = {
+    version: "sha-a1b2c3d4e5f6",
+    resolvedSource: "/plugins/hello",
+    compatibility: { installable: true, notes: [], supported: [], unsupported: [] },
+    resources: { skills: [], prompts: [], agents: [], mcpServers: [], hooks: [] },
+    enabled: true,
+    installedAt: "2025-01-01T00:00:00.000Z",
+    updatedAt: "2025-01-01T00:00:00.000Z",
+  };
+
+  const snapshot = __test_clonePluginRecord(record);
+
+  assert.equal(Object.hasOwn(snapshot, "hookEntries"), false);
 });

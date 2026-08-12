@@ -1,95 +1,116 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.17
-milestone_name: env-parity
+milestone: v1.18
+milestone_name: Manifest-Independent Installed Plugin Info
 status: Awaiting next milestone
-stopped_at: Milestone v1.17 closed and archived (2026-08-05)
-last_updated: "2026-08-05T12:18:50.749Z"
-last_activity: 2026-08-05
-last_activity_desc: Milestone v1.17 completed and archived
+stopped_at: Milestone v1.18 closed and archived (2026-08-12)
+last_updated: "2026-08-12T21:00:00.000Z"
+last_activity: 2026-08-12
+last_activity_desc: Milestone v1.18 completed and archived
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 9
-  completed_plans: 9
+  total_phases: 6
+  completed_phases: 6
+  total_plans: 29
+  completed_plans: 29
   percent: 100
-current_phase: 90
-current_phase_name: session-environment-initialization
+current_phase: 100
+current_phase_name: disabled-plugin-information-retention
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-08-05 after v1.17 close)
+See: .planning/PROJECT.md (updated 2026-08-12 after v1.18 close)
 
 **Core value:** A Pi user can run `/claude:plugin install <plugin>@<marketplace>`
 and, after `/reload`, have every supported Claude plugin component appear as a
 working Pi-native artifact — atomically, recoverably, and with soft-dependency
 degradation that never blocks the install.
-**Current focus:** Planning next milestone. v1.17 env-parity shipped 2026-08-05;
-PR #115 (`features/env-parity`) carries the milestone and awaits review/merge;
-npm 0.13.0 releases via the v-tag CI publish path after the squash-merge.
+**Current focus:** Planning next milestone. v1.18 shipped 2026-08-12; PR #120
+(`features/manifest-independent-plugin-info`) carries the milestone and awaits
+merge; npm 0.14.0 releases via the v-tag CI publish path after the squash-merge.
 
 ## Current Position
 
-Phase: Milestone v1.17 complete (Phases 90-94 archived to
-.planning/milestones/v1.17-phases/)
+Phase: Milestone v1.18 complete (Phases 95-100 archived to
+.planning/milestones/v1.18-phases/)
 Plan: —
 Status: Awaiting next milestone
-Last activity: 2026-08-05 — Milestone v1.17 completed and archived
+Last activity: 2026-08-12 — Milestone v1.18 completed and archived
 
 ## Milestone Summary
 
-v1.17 env-parity shipped 2026-08-05 — 5 phases (90-94), 9 plans, 23 tasks,
-14/14 requirements satisfied; milestone audit passed (9/9 integration seams,
-5/5 E2E flows); all five phases UAT-confirmed. Full detail:
-.planning/milestones/v1.17-ROADMAP.md, .planning/milestones/v1.17-REQUIREMENTS.md,
-and the entry in .planning/MILESTONES.md.
+v1.18 Manifest-Independent Installed Plugin Info shipped 2026-08-12 — 6 phases
+(95-100), 29 plans, 64 tasks, 32/32 requirements satisfied; milestone audit
+passed (6/6 phases, 5/5 integration seams, 3/3 flows, `threats_open: 0`);
+Phase 100 closed on live human UAT against Pi 0.84.1 (3/3, zero issues). Full
+detail: .planning/milestones/v1.18-ROADMAP.md,
+.planning/milestones/v1.18-REQUIREMENTS.md, and the entry in
+.planning/MILESTONES.md.
+
+An installed plugin now stays visible, inspectable and uninstallable after its
+marketplace manifest stops declaring it; a disabled partially-installed plugin
+is recognized as disabled again; and a disabled plugin keeps describing itself.
 
 Known tech debt carried out of the milestone (recorded in
-milestones/v1.17-MILESTONE-AUDIT.md): Phase 90's VALIDATION.md was left at
-`status: draft` (coverage itself re-verified 20/20), and 91-01-SUMMARY.md
-predates review-fix commit 96cb08c5 (narrative staleness only).
+milestones/v1.18-MILESTONE-AUDIT.md): 99-VALIDATION.md and 100-VALIDATION.md
+were both left at `status: draft` — seeded by plan-phase, never promoted by
+`/gsd-validate-phase`, so neither `nyquist_compliant: false` is authoritative
+(coverage itself is asserted independently by each phase's VERIFICATION.md).
+One stale test comment at
+tests/orchestrators/plugin/list-manifest-absent.test.ts:179 still states the
+retired ENBL-04 definition; named and deliberately deferred by the phase's own
+review loop, confirmed harmless. Three rare-failure arms in reinstall/install
+remain uncovered, each with its unreachability reason recorded in
+99-07-SUMMARY.md.
 
 ### Quick Tasks Completed
 
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
-| 260802-v2z | amend v1.17 env-parity planning docs per validation findings | 2026-08-02 | 1ce8f203 | [260802-v2z-amend-v1-17-env-parity-planning-docs-per](./quick/260802-v2z-amend-v1-17-env-parity-planning-docs-per/) |
-| 260804-gcs | Fix applyPathLedger non-owned PATH stripping | 2026-08-04 | aeef0882 | [260804-gcs-fix-applypathledger-non-owned-path-strip](./quick/260804-gcs-fix-applypathledger-non-owned-path-strip/) |
+| 260807-q0v | amend v1.18 planning docs per two-review validation findings | 2026-08-07 | d76b4f6 | [260807-q0v-amend-v1-18-planning-docs-per-two-review](./quick/260807-q0v-amend-v1-18-planning-docs-per-two-review/) |
+| 260807-ur3 | bring disabled-partial classification repair into v1.18 scope | 2026-08-07 | d543f74 | [260807-ur3-bring-disabled-partial-classification-re](./quick/260807-ur3-bring-disabled-partial-classification-re/) |
+| 260808-dhm | amend v1.18 requirements for LLM tool-surface reason widening | 2026-08-08 | 74df349 | [260808-dhm-amend-v1-18-requirements-for-llm-tool-su](./quick/260808-dhm-amend-v1-18-requirements-for-llm-tool-su/) |
 
 ## Decisions
 
-The v1.17 decision log is folded into PROJECT.md Key Decisions (D-90-05,
-D-90-06, and the docs/env-vars.md authority decision added at the close).
-No open decisions.
+The v1.18 decision log is folded into PROJECT.md Key Decisions (D-96-02
+own-manifest authority, ENBL-05 single-axis disabled predicate, ENBL-18 disable
+retains inventory, and `hookEntries` as an additive record key). No open
+decisions.
 
 ## Deferred Items
 
-Items acknowledged and deferred at the v1.14 milestone close on 2026-07-23,
-re-acknowledged unchanged at the v1.16 close on 2026-07-31, and re-acknowledged
-at the v1.17 close on 2026-08-05 (override_closeout, known deferred artifacts: 6).
-The one addition at the v1.17 close is the `async-rewake-lane-inert` debug
-session — a concluded diagnose-only investigation (root cause confirmed: the
-async-rewake lane is inert on Stop by design; no fix applied or intended).
-None of the carryover items originate from v1.17 env-parity.
+**None carried.** This is a `verified_closeout`: all six phases hold
+`verification_status: passed`, and every item the pre-close artifact audit
+flagged was resolved rather than acknowledged. The seven carryover items that
+had been re-acknowledged unchanged at the v1.14, v1.16 and v1.17 closes are now
+closed or relocated:
 
-| Category | Item | Status |
-|----------|------|--------|
-| backlog | REASON-01 — unify all parse-error reasons under a `{malformed <feature>}` family | deferred |
-| debug | async-rewake-lane-inert | diagnosed (diagnose-only; by design) |
-| debug | knowledge-base | unknown |
-| quick_task | 260621-kmm-add-explicit-enabled-boolean-field-to-pl | unknown |
-| quick_task | 260718-tli-fix-pr-88-external-contribution-to-pass- | unknown |
-| todo | 2026-06-12-coverage-sweep-test-rare-failure-arms-in-update-reinstall-in | testing |
-| seed | SEED-001-remote-plugin-status-fetch-verb | dormant (superseded by url-source/fetch-plugin) |
+| Category | Item | Disposition at the v1.18 close |
+|----------|------|--------------------------------|
+| backlog | REASON-01 — unify parse-error reasons under a `{malformed <feature>}` family | Lives in BACKLOG.md; not an open artifact |
+| debug | async-rewake-lane-inert | Concluded diagnose-only; filed under debug/resolved/ |
+| debug | knowledge-base | Not a session — the knowledge base itself; marked `status: resolved` so the scanner stops counting it |
+| quick_task | 260621-kmm-add-explicit-enabled-boolean-field-to-pl | Landed long ago; SUMMARY gained the missing `status: complete` |
+| quick_task | 260718-tli-fix-pr-88-external-contribution-to-pass- | Landed long ago; SUMMARY gained the missing `status: complete` |
+| todo | 2026-08-10 coverage exclusion versus tests for the out-of-bound orchestrators | Promoted to BACKLOG.md as COV-01; todo moved to todos/completed/ |
+| seed | SEED-001-remote-plugin-status-fetch-verb | Promoted to BACKLOG.md as the RSTA/FTCH entry; seed marked `status: promoted` and kept as the planting record |
+
+The Phase 95 deferred pair (two pi-subagents integration suites failing on a
+stale global peer) was fixed, not deferred: upgrading the global install from
+0.24.3 to 0.47.1 — above the `>=0.35.0` floor — took `npm run test:integration`
+from 16/18 to 18/18 with no source change.
 
 ## Operator Next Steps
 
-- Merge PR #115 (`gh pr merge --squash`) once review completes; npm 0.13.0
+- Merge PR #120 (`gh pr merge --squash`) once review completes; npm 0.14.0
   releases via the v-tag CI publish path.
-- Start the next milestone with /gsd-new-milestone
+- Start the next milestone with /gsd-new-milestone. BACKLOG.md carries two
+  promoted candidates: RSTA/FTCH (remote plugin status + fetch verb, a
+  ready-made 13-requirement set) and COV-01 (coverage exclusion policy plus the
+  two out-of-bound orchestrators).
 
 ## Performance Metrics
 

@@ -699,6 +699,35 @@ const FIXTURES: FixtureMap = {
       },
     },
 
+    // ENBL-16 / D-100-07: the disabled inventory row carries `not in manifest`
+    // -- and no other reason. The stamp is an orchestrator decision made at the
+    // inventory site, so the fresh-disable transition row (which stamps
+    // nothing) keeps rendering bare. `piWithBothLoaded` is not what suppresses
+    // the soft-dep markers here: the renderer passes both soft-dep flags as
+    // `false` for this variant whatever the probe reports (ENBL-15).
+    "disabled-inventory-not-in-manifest": {
+      pi: piWithBothLoaded(),
+      message: {
+        marketplaces: [
+          {
+            name: "official",
+            scope: "user",
+            details: { autoupdate: true },
+            plugins: [
+              {
+                status: "disabled",
+                name: "foo-plugin",
+                version: "1.2.3",
+                reasons: ["not in manifest"],
+                severity: "info",
+                needsReload: false,
+              },
+            ],
+          },
+        ],
+      },
+    },
+
     // RSTA-01 / D-80-03: list-surface inventory row for a not-installed
     // git-source plugin whose clone/mirror is not materialized locally. The
     // `(remote)` closed-set token wears the dedicated `◌` glyph. Bare row --
@@ -824,6 +853,58 @@ const FIXTURES: FixtureMap = {
                 name: "clean-plugin",
                 version: "1.0.0",
                 reasons: ["unsupported component"],
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // INV-01: the steady-state inventory row for a record whose marketplace
+    // manifest loaded successfully but does not declare it. The clean
+    // `(installed)` token and `●` glyph are unchanged -- manifest absence is a
+    // reason, not a status. Severity stays `info` (no `expectedSeverity`).
+    "manifest-absent-inventory": {
+      pi: piWithBothLoaded(),
+      message: {
+        marketplaces: [
+          {
+            name: "official",
+            scope: "user",
+            details: { autoupdate: true },
+            plugins: [
+              {
+                status: "installed",
+                name: "orphan-plugin",
+                version: "1.0.0",
+                needsReload: false,
+                dependencies: [],
+                reasons: ["not in manifest"],
+                severity: "info",
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // INV-02: manifest absence and dropped components are independent axes, so
+    // a degraded manifest-absent record carries BOTH -- absence first, then the
+    // `narrowUnsupportedKinds` output. Severity stays `info`.
+    "manifest-absent-partially-installed-inventory": {
+      pi: piWithBothLoaded(),
+      message: {
+        marketplaces: [
+          {
+            name: "official",
+            scope: "user",
+            details: { autoupdate: true },
+            plugins: [
+              {
+                status: "partially-installed",
+                name: "degraded-plugin",
+                version: "1.0.0",
+                reasons: ["not in manifest", "lsp"],
               },
             ],
           },
@@ -1268,6 +1349,35 @@ const FIXTURES: FixtureMap = {
                 name: "alpha",
                 version: "1.0.0",
                 dependencies: ["agents", "mcp"],
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // WARN-01 / WR-09: a component the reinstall's own ledger degraded names
+    // its kind on the `(reinstalled)` row and takes the info -> warning raise,
+    // matching the install / enable / backfill arms.
+    "reinstall-degraded-component": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "warning",
+      message: {
+        label: "Plugin reinstall",
+        cardinality: "plural",
+        marketplaces: [
+          {
+            name: "official",
+            scope: "user",
+            plugins: [
+              {
+                status: "reinstalled",
+                severity: "warning",
+                needsReload: true,
+                name: "alpha",
+                version: "1.0.0",
+                dependencies: [],
+                reasons: ["malformed skill"],
               },
             ],
           },
@@ -1782,6 +1892,100 @@ const FIXTURES: FixtureMap = {
       },
     },
 
+    // WARN-01 / WR-12 / D-99-03: a component the update's own ledger degraded
+    // names its kind on the `(updated)` row and takes the info -> warning raise,
+    // matching the install / enable / reinstall arms. Distinct from the
+    // dropped-kind axis below, which renders `(partially-installed)`.
+    "update-degraded-component": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "warning",
+      message: {
+        label: "Plugin update",
+        cardinality: "single",
+        marketplaces: [
+          {
+            name: "official",
+            scope: "user",
+            plugins: [
+              {
+                status: "updated",
+                severity: "warning",
+                needsReload: true,
+                name: "alpha",
+                from: "1.0.0",
+                to: "1.0.1",
+                dependencies: [],
+                reasons: ["malformed skill"],
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // SURF-05 / D-63-08 / WR-01: the update verb's orphan-rewake row. Same token
+    // and same info severity as the install / enable / backfill rows -- the
+    // config bug names itself in the brace and moves no severity channel.
+    "update-orphan-rewake": {
+      pi: piWithBothLoaded(),
+      message: {
+        label: "Plugin update",
+        cardinality: "single",
+        marketplaces: [
+          {
+            name: "official",
+            scope: "user",
+            plugins: [
+              {
+                status: "updated",
+                severity: "info",
+                needsReload: true,
+                name: "alpha",
+                from: "1.0.0",
+                to: "1.0.1",
+                dependencies: [],
+                reasons: ["orphan rewake"],
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // CR-01 / WARN-01 / FSTAT-07: the dropped-kind and malformed-component axes
+    // firing on one ledger run. The drop picks the row FORM
+    // (`partially-installed`, post-update version, no arrow); the malformed
+    // component adds its token to the same brace, in the install row's emit
+    // order (malformed first). Both cascade surfaces compose this through the
+    // one `updatedRowFromOutcome` seam, so neither can name one axis and
+    // swallow the other.
+    "update-degraded-and-dropped": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "warning",
+      message: {
+        label: "Plugin update",
+        cardinality: "single",
+        marketplaces: [
+          {
+            name: "official",
+            scope: "user",
+            plugins: [
+              {
+                status: "partially-installed",
+                severity: "warning",
+                needsReload: true,
+                name: "alpha",
+                scope: "user",
+                version: "1.0.1",
+                dependencies: [],
+                reasons: ["malformed skill", "unsupported component"],
+              },
+            ],
+          },
+        ],
+      },
+    },
+
     // SEV-04 / D-69-02 / XSURF-03: a TARGETED `update <plugin>@<marketplace>`
     // that declines a partially-upgradable candidate (no `--partial`) is actionable
     // -> warning. The decline flips to the `partially-upgradable` token (consistent
@@ -1870,6 +2074,37 @@ const FIXTURES: FixtureMap = {
             ],
           },
         ]);
+      },
+    },
+
+    // WR-04 / D-98-04: a targeted `update` against a DISABLED record that is
+    // ALREADY degraded and whose candidate re-resolves `partially-available`.
+    // The record-derived gate admits it with no flag typed and the D-UPD
+    // short-circuit refreshes the record's metadata while staging nothing.
+    // WR-02: the row names why nothing was materialized rather than claiming
+    // `up-to-date` in the very call that moved the pin -- both tokens are
+    // inherited closed-set members, and `already disabled` is idempotent, so the
+    // row keeps its info severity. No trailer.
+    "disabled-record-refresh": {
+      pi: piWithBothLoaded(),
+      message: {
+        label: "Plugin update",
+        cardinality: "single",
+        marketplaces: [
+          {
+            name: "mp",
+            scope: "project",
+            plugins: [
+              {
+                status: "skipped",
+                severity: "info",
+                needsReload: false,
+                name: "hello",
+                reasons: ["already disabled"],
+              },
+            ],
+          },
+        ],
       },
     },
 
@@ -2668,10 +2903,20 @@ const FIXTURES: FixtureMap = {
   //   - Success states:
   //     * installed-single-scope                       (INFO-02 happy path)
   //     * installed-single-scope-with-dependencies     (INFO-02 + dependencies line)
+  //     * state-only-installed-single-scope            (INFO-09 record-backed row)
+  //     * state-only-partially-installed-single-scope  (INFO-10 record-backed partial)
+  //     * state-only-installed-with-hooks              (INFO-11 materialized hooks block)
+  //     * state-only-installed-hooks-degraded          (D-96-03 unlistable hooks marker)
+  //     * state-only-disabled-with-components          (ENBL-17 disabled record, retained inventory)
   //     * available-single-scope                       (INFO-02 available bucket)
   //     * unavailable-single-scope                     (INFO-02 unavailable + {unsupported hooks})
+  //   - Warning states:
+  //     * state-only-fetch-skipped                     (D-96-04 skipped --fetch note, "warning")
+  //     * disabled-fetch-skipped                       (D-96-04 skipped --fetch on a disabled record)
+  //     * mixed-fetch-skipped                          (D-96-04 both causes in one note, MSG-GR-3 order)
   //   - Multi-scope fan-out:
   //     * installed-both-scopes-fan-out                (INFO-03 project-first fan-out)
+  //     * state-only-installed-both-scopes-fan-out     (INFO-09 record-backed fan-out)
   //   - Components arm (INFO-05):
   //     * components-not-resolved                      (external-source marker)
   //   - Failure states:
@@ -2681,7 +2926,8 @@ const FIXTURES: FixtureMap = {
   //
   // Severity routing: every success + fan-out + components-not-resolved
   // state is `info` (omits `expectedSeverity`); the three `{not added}` /
-  // `{not in manifest}` failure states route to `"error"`.
+  // `{not in manifest}` failure states route to `"error"`; the three D-96-04
+  // fetch-skip notes are the only `"warning"` states on this surface.
   // -------------------------------------------------------------------------
   "/claude:plugin info <plugin>@<marketplace>": {
     "installed-single-scope": {
@@ -2727,6 +2973,207 @@ const FIXTURES: FixtureMap = {
           dependencies: ["helper@utils-mp"],
         },
       } satisfies NotificationMessage,
+    },
+
+    "state-only-installed-single-scope": {
+      pi: piWithBothLoaded(),
+      message: {
+        kind: "plugin-info",
+        marketplaceName: "mp",
+        marketplaceScope: "user",
+        marketplaceDetails: { autoupdate: false },
+        plugin: {
+          status: "installed",
+          name: "alpha",
+          version: "1.0.0",
+          reasons: ["not in manifest"],
+          componentsResolved: true,
+          components: {
+            skills: ["alpha-skill"],
+          },
+        },
+      } satisfies NotificationMessage,
+    },
+
+    "state-only-partially-installed-single-scope": {
+      pi: piWithBothLoaded(),
+      message: {
+        kind: "plugin-info",
+        marketplaceName: "mp",
+        marketplaceScope: "user",
+        marketplaceDetails: { autoupdate: false },
+        plugin: {
+          status: "partially-installed",
+          name: "alpha",
+          version: "1.0.0",
+          reasons: ["not in manifest", "lsp"],
+          componentsResolved: true,
+          components: {
+            skills: ["alpha-skill"],
+          },
+        },
+      } satisfies NotificationMessage,
+    },
+
+    "state-only-installed-with-hooks": {
+      pi: piWithBothLoaded(),
+      message: {
+        kind: "plugin-info",
+        marketplaceName: "mp",
+        marketplaceScope: "user",
+        marketplaceDetails: { autoupdate: false },
+        plugin: {
+          status: "installed",
+          name: "alpha",
+          version: "1.0.0",
+          reasons: ["not in manifest"],
+          componentsResolved: true,
+          components: {
+            hooks: [{ event: "Stop" }, { event: "PreToolUse", matcher: "Bash" }],
+            skills: ["alpha-skill"],
+          },
+        },
+      } satisfies NotificationMessage,
+    },
+
+    "state-only-installed-hooks-degraded": {
+      pi: piWithBothLoaded(),
+      message: {
+        kind: "plugin-info",
+        marketplaceName: "mp",
+        marketplaceScope: "user",
+        marketplaceDetails: { autoupdate: false },
+        plugin: {
+          status: "installed",
+          name: "alpha",
+          version: "1.0.0",
+          reasons: ["not in manifest", "source missing"],
+          componentsResolved: true,
+          components: {
+            skills: ["alpha-skill"],
+          },
+        },
+      } satisfies NotificationMessage,
+    },
+
+    // ENBL-16 / ENBL-17: a recorded-but-disabled record the manifest no longer
+    // declares. `status: "disabled"` on a `PluginInfoRow` is what the reroute
+    // added: the row travels the shared block builder, so it carries the
+    // component inventory the disable preserved (ENBL-18) and the hook entries
+    // the record holds -- the materialized configuration is gone. `reasons`
+    // carries the absence token ALONE: a persisted unsupported kind would be
+    // suppressed on this row (ENBL-16 / D-100-07), so no fixture can show one.
+    "state-only-disabled-with-components": {
+      pi: piWithBothLoaded(),
+      message: {
+        kind: "plugin-info",
+        marketplaceName: "mp",
+        marketplaceScope: "user",
+        marketplaceDetails: { autoupdate: false },
+        plugin: {
+          status: "disabled",
+          name: "alpha",
+          version: "1.0.0",
+          reasons: ["not in manifest"],
+          componentsResolved: true,
+          components: {
+            hooks: [{ event: "SessionStart" }, { event: "PostToolUse", matcher: "Read" }],
+            skills: ["alpha-skill"],
+          },
+        },
+      } satisfies NotificationMessage,
+    },
+
+    // D-96-04: `--fetch` against a manifest-absent installation record. This is
+    // a CASCADE row, not a `PluginInfoRow`: the standalone info status set
+    // admits no `skipped`. The `severity: "warning"` on the row is what selects
+    // the `needs attention` summary and the second `notify` argument.
+    "state-only-fetch-skipped": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "warning",
+      message: {
+        marketplaces: [
+          {
+            name: "mp",
+            scope: "user",
+            plugins: [
+              {
+                status: "skipped",
+                name: "alpha",
+                version: "1.0.0",
+                reasons: ["not in manifest"],
+                severity: "warning",
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // D-96-04: `--fetch` against an all-disabled marketplace. Same cascade row
+    // shape as the state-only note above, with the reason token that names the
+    // OTHER cause of a skipped fetch -- a disabled record has no materialized
+    // artifacts to refresh (ENBL-02).
+    "disabled-fetch-skipped": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "warning",
+      message: {
+        marketplaces: [
+          {
+            name: "mp",
+            scope: "user",
+            plugins: [
+              {
+                status: "skipped",
+                name: "alpha",
+                version: "1.0.0",
+                reasons: ["already disabled"],
+                severity: "warning",
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // D-96-04 / MSG-GR-3: the two skip causes in ONE run. This is the byte
+    // shape `info-manifest-absent.test.ts`'s mixed-run test pins by index --
+    // plural summary, two marketplace headers, one reason token each, ordered
+    // project-first by SCOPE rather than grouped by the arm that produced the
+    // row. It composes the two states above; it is not a third cause.
+    "mixed-fetch-skipped": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "warning",
+      message: {
+        marketplaces: [
+          {
+            name: "mp",
+            scope: "project",
+            plugins: [
+              {
+                status: "skipped",
+                name: "alpha",
+                version: "1.0.0",
+                reasons: ["already disabled"],
+                severity: "warning",
+              },
+            ],
+          },
+          {
+            name: "mp",
+            scope: "user",
+            plugins: [
+              {
+                status: "skipped",
+                name: "alpha",
+                version: "2.0.0",
+                reasons: ["not in manifest"],
+                severity: "warning",
+              },
+            ],
+          },
+        ],
+      },
     },
 
     "available-single-scope": {
@@ -2797,6 +3244,47 @@ const FIXTURES: FixtureMap = {
               version: "2.0.0",
               componentsResolved: true,
               components: { agents: ["a1"] },
+            },
+          },
+        ],
+      } satisfies NotificationMessage,
+    },
+
+    // INFO-09: the same fan-out when NEITHER scope's manifest declares the
+    // plugin. Both blocks are `(installed) {not in manifest}` rather than
+    // `(failed)`, so they join one `info` cascade instead of being separated
+    // into two `error` notifications by the GRAM-04 failure split.
+    "state-only-installed-both-scopes-fan-out": {
+      pi: piWithBothLoaded(),
+      message: {
+        kind: "plugin-info-cascade",
+        blocks: [
+          {
+            kind: "plugin-info",
+            marketplaceName: "mp",
+            marketplaceScope: "project",
+            marketplaceDetails: { autoupdate: false },
+            plugin: {
+              status: "installed",
+              name: "alpha",
+              version: "1.0.0",
+              reasons: ["not in manifest"],
+              componentsResolved: true,
+              components: { skills: ["alpha-skill"] },
+            },
+          },
+          {
+            kind: "plugin-info",
+            marketplaceName: "mp",
+            marketplaceScope: "user",
+            marketplaceDetails: { autoupdate: false },
+            plugin: {
+              status: "installed",
+              name: "alpha",
+              version: "1.0.0",
+              reasons: ["not in manifest"],
+              componentsResolved: true,
+              components: { skills: ["alpha-skill"] },
             },
           },
         ],
@@ -3008,6 +3496,63 @@ const FIXTURES: FixtureMap = {
             needsReload: false,
             reasons: ["up-to-date"],
             plugins: [],
+          },
+        ],
+      },
+    },
+
+    // WR-10: the near miss of the no-op above. A disabled record whose
+    // content-derived pin moved is a `skipped` outcome, not `unchanged`, so it
+    // leaves the no-op gate and the cascade rows render. Benign idempotent
+    // reason -> INFO (no `expectedSeverity`).
+    "update-autoupdate-disabled-repin": {
+      pi: piWithBothLoaded(),
+      message: {
+        marketplaces: [
+          {
+            name: "disabled-mp",
+            scope: "user",
+            status: "updated",
+            plugins: [
+              {
+                status: "skipped",
+                name: "hello",
+                scope: "user",
+                reasons: ["already disabled"],
+                severity: "info",
+                needsReload: false,
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // LIFE-06 / D-98-13: the cascade skip row for an installed record whose
+    // manifest entry is gone. `outcomeToCascadePluginMessage`'s `skipped` arm
+    // forwards name, scope and reasons ONLY -- no version -- so this row is
+    // version-less while the single-plugin `update` surface renders `v1.0.0` on
+    // the same skip. That asymmetry is the byte contract, not a bug.
+    // `not in manifest` is non-idempotent, so `skipSeverity` stamps `warning`.
+    "update-autoupdate-cascade-not-in-manifest": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "warning",
+      message: {
+        marketplaces: [
+          {
+            name: "auto-skip",
+            scope: "user",
+            status: "updated",
+            plugins: [
+              {
+                status: "skipped",
+                name: "hello",
+                scope: "user",
+                reasons: ["not in manifest"],
+                severity: "warning",
+                needsReload: false,
+              },
+            ],
           },
         ],
       },
@@ -3314,6 +3859,117 @@ const FIXTURES: FixtureMap = {
       },
     },
 
+    // ENBL-07 / FSTAT-07 / D-66-04: a re-enable admitted through the partial
+    // gate drops component kinds, so the row follows the RESOLUTION (`◉
+    // (partially-installed)` + the kinds) rather than the verb. SEV-03: the
+    // degradation predates the enable, so the row stays `info` (no summary
+    // line) -- parity with install --partial and the backfill partial arm.
+    "enable-partial": {
+      pi: piWithBothLoaded(),
+      message: {
+        marketplaces: [
+          {
+            name: "claude-plugins-official",
+            scope: "user",
+            plugins: [
+              {
+                status: "partially-installed",
+                severity: "info",
+                needsReload: true,
+                name: "foo-plugin",
+                version: "1.2.3",
+                dependencies: [],
+                reasons: narrowUnsupportedKinds(["lspServers"]),
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // WARN-01 / D-86-03: the enable branch runs the same ledger over the same
+    // bridges as install, so a malformed-frontmatter degrade renders the same
+    // `(installed) {malformed skill}` row at the same `warning` raise. Distinct
+    // from `enable-partial`: a DEGRADED component installed short, a DROPPED
+    // one is absent.
+    "enable-degraded": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "warning",
+      message: {
+        marketplaces: [
+          {
+            name: "claude-plugins-official",
+            scope: "user",
+            plugins: [
+              {
+                status: "installed",
+                severity: "warning",
+                needsReload: true,
+                name: "foo-plugin",
+                version: "1.2.3",
+                dependencies: [],
+                reasons: ["malformed skill"],
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // SURF-05 / D-63-08: an orphan companion field is a config bug the ledger
+    // reports; it names itself in the brace without moving the severity
+    // channel, exactly as on the install row.
+    "enable-orphan-rewake": {
+      pi: piWithBothLoaded(),
+      message: {
+        marketplaces: [
+          {
+            name: "claude-plugins-official",
+            scope: "user",
+            plugins: [
+              {
+                status: "installed",
+                severity: "info",
+                needsReload: true,
+                name: "foo-plugin",
+                version: "1.2.3",
+                dependencies: [],
+                reasons: ["orphan rewake"],
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // SEV-01 / WR-06: the enable row derives `dependencies` from the ledger's
+    // staged counts, so a re-enable that staged an agent declares the
+    // `pi-subagents` companion. With that companion unloaded the row takes the
+    // marker AND the info -> warning raise, exactly as the install row does for
+    // the same ledger run.
+    "enable-soft-dep": {
+      pi: piWithNothingLoaded(),
+      expectedSeverity: "warning",
+      message: {
+        marketplaces: [
+          {
+            name: "claude-plugins-official",
+            scope: "user",
+            plugins: [
+              {
+                status: "installed",
+                severity: "warning",
+                needsReload: true,
+                name: "foo-plugin",
+                version: "1.2.3",
+                dependencies: ["agents"],
+              },
+            ],
+          },
+        ],
+      },
+    },
+
     "enable-idempotent": {
       pi: piWithBothLoaded(),
       // Idempotent no-op -- benign reason routes to info per UXG-02 / D-28-06.
@@ -3376,6 +4032,38 @@ const FIXTURES: FixtureMap = {
                 needsReload: false,
                 name: "foo-plugin",
                 reasons: ["source missing"],
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // WR-02 / CR-01 / D-98-03: the stale-gate enable failure. `partialHint` on a
+    // `failed` row is set ONLY by the enable-failure narrowing, and it selects
+    // the enable-worded `STALE_GATE_UPDATE_HINT_TRAILER` -- NOT the XSURF-03
+    // update-decline trailer, whose "re-run" wording would name `enable`, the
+    // one command that rejects `--partial`. The `{lsp}` brace comes through the
+    // same `narrowUnsupportedKinds` seam the list `(partially-upgradable)` row
+    // uses.
+    "enable-failed-stale-gate": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "error",
+      message: {
+        marketplaces: [
+          {
+            name: "claude-plugins-official",
+            scope: "user",
+            plugins: [
+              {
+                status: "failed",
+                severity: "error",
+                needsReload: false,
+                name: "foo-plugin",
+                version: "1.2.3",
+                reasons: narrowUnsupportedKinds(["lspServers"]),
+                partialHint: true,
+                cause: new Error('Plugin "foo-plugin" is not installable: contains lspServers'),
               },
             ],
           },
@@ -3896,6 +4584,36 @@ const FIXTURES: FixtureMap = {
                 version: "1.0.0",
                 dependencies: [],
                 reasons: [],
+                severity: "info",
+                needsReload: true,
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // WR-06 / SEV-01: the projected enable row derives `dependencies` from the
+    // ledger's staged counts, so the soft-dep marker fires on the load-time
+    // surface too. Severity stays `info` -- this projection applies the
+    // companion raise on neither arm, so its enable arm agrees with its
+    // install arm; the standalone verb owns the SEV-01 composition.
+    "reconcile-enable-soft-dep": {
+      pi: piWithNothingLoaded(),
+      message: {
+        kind: "reconcile-applied-cascade",
+        label: "Reconcile",
+        cardinality: "plural",
+        marketplaces: [
+          {
+            name: "local-mp",
+            scope: "user",
+            plugins: [
+              {
+                status: "installed",
+                name: "hello",
+                version: "1.0.0",
+                dependencies: ["agents"],
                 severity: "info",
                 needsReload: true,
               },

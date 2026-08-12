@@ -1129,6 +1129,73 @@ test("WR-03: marketplace.json missing on disk surfaces `{source missing}` failur
 });
 
 // ---------------------------------------------------------------------------
+// BOUND-01: a manifest that could not be READ licenses no membership claim
+// about its contents, so a live installation record must not rescue the block
+// into an installed-looking row. The read-failure arm returns before any
+// plugin lookup, and this pins that ordering byte-exact with a populated
+// record behind the unreadable manifest.
+// ---------------------------------------------------------------------------
+
+test("BOUND-01: a manifest READ FAILURE with an installed record present still renders the failure row, not the installation record", async () => {
+  await withHermeticHome(async ({ home, cwd }) => {
+    const userRoot = path.join(home, ".pi", "agent");
+    const locations = locationsFor("user", cwd);
+    await mkdir(locations.extensionRoot, { recursive: true });
+
+    const mpRoot = path.join(userRoot, "marketplaces", "mp");
+    const manifestPath = path.join(mpRoot, ".claude-plugin", "marketplace.json");
+    // Intentionally do NOT write the manifest file -- the state record
+    // points at a path that does not exist.
+    await mkdir(path.dirname(manifestPath), { recursive: true });
+
+    await saveState(locations.extensionRoot, {
+      schemaVersion: 2,
+      marketplaces: {
+        mp: {
+          name: "mp",
+          scope: "user",
+          source: pathSource("./mp-src"),
+          addedFromCwd: cwd,
+          manifestPath,
+          marketplaceRoot: mpRoot,
+          plugins: {
+            alpha: {
+              version: "1.0.0",
+              resolvedSource: "./placeholder",
+              compatibility: { installable: true, notes: [], supported: [], unsupported: [] },
+              resources: {
+                skills: ["alpha-skill"],
+                prompts: [],
+                agents: [],
+                mcpServers: [],
+                hooks: [],
+              },
+              enabled: true,
+              installedAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+            },
+          },
+        },
+      },
+    });
+
+    const { ctx, pi, notifications } = makeCtx();
+    await getPluginInfo({ ctx, pi, marketplace: "mp", plugin: "alpha", scope: "user", cwd });
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0]!.severity, "error");
+    assert.equal(
+      notifications[0]!.message,
+      [
+        "A plugin operation has failed.",
+        "",
+        "● mp [user] <no autoupdate>",
+        "  ⊘ alpha (failed) {source missing}",
+      ].join("\n"),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Component-discovery failure propagation. ENOENT/ENOTDIR on a declared
 // component dir is the legitimate "no components in this kind" state
 // and yields an empty bucket. Every other readdir failure (EACCES, EPERM,
@@ -1506,10 +1573,14 @@ test("NFR-5 end-to-end: github-source marketplace record resolves plugin info fr
 });
 
 // ---------------------------------------------------------------------------
-// D-54-01 / ENBL-04: recorded-but-disabled plugin on the info surface (CR-02)
+// D-100-08 / ENBL-17: recorded-but-disabled plugin on the info surface. A
+// record its manifest STILL declares resolves from the manifest exactly as an
+// uninstalled one does, so the row reports the description and the component
+// inventory -- while the injected disabled status keeps it from claiming to be
+// installed.
 // ---------------------------------------------------------------------------
 
-test("ENBL-04: info on a recorded-but-disabled plugin renders the list-arm `(disabled)` inventory row (not the installed info block)", async () => {
+test("D-100-08 / ENBL-17: info on a recorded-but-disabled plugin reports its description and components, still as `(disabled)`", async () => {
   await withHermeticHome(async ({ home, cwd }) => {
     const userRoot = path.join(home, ".pi", "agent");
     await seedPathMarketplace({
@@ -1529,7 +1600,6 @@ test("ENBL-04: info on a recorded-but-disabled plugin renders the list-arm `(dis
           },
         ],
       },
-      // ENBL-02 marker: empty resources + installable:true.
       installed: { foo: { version: "1.2.3", disabled: true } },
       installablePluginDirs: ["foo"],
       componentDirs: { foo: ["skills/s1"] },
@@ -1538,20 +1608,27 @@ test("ENBL-04: info on a recorded-but-disabled plugin renders the list-arm `(dis
     const { ctx, pi, notifications } = makeCtx();
     await getPluginInfo({ ctx, pi, marketplace: "mp", plugin: "foo", scope: "user", cwd });
 
-    // Single notify (IL-2 holds on the all-disabled path); list-arm
-    // marketplace header + `(disabled)` row per the catalog's info-surface
-    // paragraph; NO per-kind component lines (the plugin has no
-    // materialized artifacts -- ENBL-02). Severity info.
+    // One notify, the standalone `plugin-info` shape every other installed
+    // record uses: the manifest header, the `(disabled)` row, the manifest
+    // description and the resolved component lines. The status token is what
+    // stops the inventory being read as a running plugin -- it is not softened
+    // or displaced by the lines below it. Severity info: a disabled record is
+    // steady state, not a failure.
     assert.equal(notifications.length, 1);
-    assert.equal(notifications[0]!.severity, undefined, "disabled inventory routes to info");
+    assert.equal(notifications[0]!.severity, undefined, "a disabled record is not a failure");
     assert.equal(
       notifications[0]!.message,
-      ["● mp [user]", "  ◍ foo v1.2.3 (disabled)"].join("\n"),
+      [
+        "● mp [user] <no autoupdate>",
+        "  ◍ foo v1.2.3 (disabled)",
+        "    Foo plugin",
+        "    skills: s1",
+      ].join("\n"),
     );
   });
 });
 
-test("ENBL-04: bare info (no --scope) with disabled record in one scope and info block in the other emits BOTH surfaces", async () => {
+test("D-100-08 / ENBL-17: bare info (no --scope) with a disabled record in one scope renders ONE cascade with both scopes", async () => {
   await withHermeticHome(async ({ home, cwd }) => {
     const userRoot = path.join(home, ".pi", "agent");
     const projectRoot = path.join(cwd, ".pi");
@@ -1587,11 +1664,12 @@ test("ENBL-04: bare info (no --scope) with disabled record in one scope and info
     const { ctx, pi, notifications } = makeCtx();
     await getPluginInfo({ ctx, pi, marketplace: "mp", plugin: "foo", cwd });
 
-    // Two notifies: the project-scope info block + the user-scope
-    // `(disabled)` inventory block (mirrors the GRAM-04 mixed-surface
-    // separation -- the two message kinds cannot share one cascade).
-    assert.equal(notifications.length, 2);
-    const all = notifications.map((n) => n.message).join("\n---\n");
+    // ONE notify: the disabled scope is no longer a foreign message kind, so
+    // both scopes ride the same cascade. The second notify the mixed
+    // disabled+info result used to force is gone with the divert that caused
+    // it.
+    assert.equal(notifications.length, 1, JSON.stringify(notifications));
+    const all = notifications[0]!.message;
     assert.match(all, /● foo v1\.0\.0 \(installed\)/, all);
     assert.match(all, /◍ foo v1\.2\.3 \(disabled\)/, all);
   });

@@ -36,6 +36,31 @@ import { errorMessage } from "../shared/errors.ts";
 import { migrateLegacyMarketplaceRecords, persistMigratedState } from "./migrate.ts";
 
 /**
+ * D-100-01 / D-100-02 / ENBL-11: one persisted hook entry -- the event name
+ * plus the optional matcher, and NOTHING else.
+ *
+ * The two properties are the whole payload boundary. Handler material --
+ * command strings, arguments, timeouts, environment -- is never written here,
+ * so `state.json` does not become a durable copy of a plugin's shell commands
+ * and `info` has nothing of the sort to render. The value is a RENDERING
+ * source only, never a routing source: registered handlers come from the
+ * hydrate walk over the on-disk materialized configuration and from nowhere
+ * else, so a fabricated entry can mislead `info` but cannot run.
+ *
+ * `event` is a plain string rather than a closed union on purpose: a future
+ * Claude event token must not invalidate a whole state file. The narrowing to
+ * the renderer's closed `HookSummaryEntry` union happens once, at the read
+ * boundary (`domain/components/hooks.ts::hookSummaryEntriesFromPersisted`).
+ */
+const PERSISTED_HOOK_ENTRY_SCHEMA = Type.Object({
+  event: Type.String(),
+  matcher: Type.Optional(Type.String()),
+});
+
+/** The persisted hook-entry shape derived from its schema. */
+export type PersistedHookEntry = Type.Static<typeof PERSISTED_HOOK_ENTRY_SCHEMA>;
+
+/**
  * ST-3: per-plugin install record (D-09 nesting under marketplaces.<mp>.plugins).
  *
  * HOOK-02 / D-57-01: `resources.hooks` is REQUIRED (string[]). It holds
@@ -50,8 +75,13 @@ import { migrateLegacyMarketplaceRecords, persistMigratedState } from "./migrate
  * fills `enabled: true` for all existing records via `ensurePluginEnabled`
  * before validation runs, so v1.0..v1.13 state.json files load cleanly.
  * `enabled: false` is the sole disable marker; `true` means active.
+ *
+ * COMPAT-01: exported so the no-expansion gate reads the record's key set off
+ * this single source of truth rather than a hand-maintained field list that
+ * would drift. No production consumer imports it; the schema stays the sole
+ * validation boundary for the persisted record.
  */
-const PLUGIN_INSTALL_RECORD_SCHEMA = Type.Object({
+export const PLUGIN_INSTALL_RECORD_SCHEMA = Type.Object({
   version: Type.String(),
   resolvedSource: Type.String(),
   // D-77-02 / PURL-09: the full 40-hex resolved commit sha for git-source
@@ -61,6 +91,25 @@ const PLUGIN_INSTALL_RECORD_SCHEMA = Type.Object({
   // path/github-name installs omit it. Reinstall uses THIS full sha as its
   // re-clone checkout pin; clone GC presence-checks it to derive live keys.
   resolvedSha: Type.Optional(Type.String()),
+  // D-100-01 / ENBL-10: the supported hook entries the install materialized.
+  // OPTIONAL and additive -- NO schemaVersion bump (the resolvedSha
+  // precedent), so a legacy record without it loads unchanged and absence
+  // needs no migrate fill.
+  //
+  // ABSENCE MEANS "this record predates the key": the reader falls through to
+  // the materialized-file read. That is a DIFFERENT fact from a present empty
+  // array, which means "this plugin declares no supported hooks" -- a
+  // completed answer carrying zero entries. Records self-heal on the next
+  // install, update, reinstall or enable; there is no backfill (D-100-09).
+  //
+  // Two payload boundaries, both enforced by PERSISTED_HOOK_ENTRY_SCHEMA
+  // above: the entries are the SUPPORTED subset only (D-100-02), and no
+  // handler payload is recorded, so the value is a rendering source and never
+  // a routing source.
+  //
+  // Named for the entries themselves because `resources.hooks` already holds
+  // a different fact -- the hooks CONTAINER slug.
+  hookEntries: Type.Optional(Type.Array(PERSISTED_HOOK_ENTRY_SCHEMA)),
   compatibility: Type.Object({
     installable: Type.Boolean(),
     notes: Type.Array(Type.String()),
@@ -83,47 +132,78 @@ const PLUGIN_INSTALL_RECORD_SCHEMA = Type.Object({
 export type PluginInstallRecord = Type.Static<typeof PLUGIN_INSTALL_RECORD_SCHEMA>;
 
 /**
- * ENBL-02 two-signal invariant, expressed in the type system.
+ * ENBL-02 / ENBL-18 / D-100-10: the disable transform's guarantee, expressed
+ * in the type system.
  *
- * The stored record permits any `enabled` + `resources` combination, but
- * only three are legal: enabled + populated (active), disabled + empty (the
- * disable terminal state), and enabled + empty (the transient
- * post-migration / pre-self-heal shape). The fourth -- disabled + populated
- * -- is the contradiction these branded types forbid: `DisabledPluginRecord`
- * pins every resources array to the empty tuple `[]`, so a literal carrying a
- * non-empty array is a compile error. `toDisabledRecord` is the sole
- * sanctioned producer; the disable orchestrator routes through it (replacing
- * the record in the map) instead of mutating fields in place, so the branded
- * type survives to the assignment.
+ * `enabled` is the sole disable marker, and disabling changes `enabled` and
+ * `updatedAt` and NOTHING ELSE. The record is a description of the
+ * INSTALLATION, not a mirror of the current disk contents: the disable cascade
+ * still unstages every artifact of all five kinds (ENBL-13 / D-100-04), but the
+ * record keeps naming what the install materialized, so `info` can report what
+ * a disabled plugin contains -- including after its marketplace manifest entry
+ * has disappeared and nothing else can answer.
+ *
+ * The resources shape rides through as the type parameter `R`, so a producer
+ * returning a record whose `resources` differs from its input's is a compile
+ * error. `toDisabledRecord` is the sole sanctioned producer; the disable
+ * orchestrator routes through it (replacing the record in the map) instead of
+ * mutating fields in place, so the type survives to the assignment. Because the
+ * generic constrains only the producer, the behavioral proof that disable
+ * preserves the inventory lives in the orchestrator suite.
  */
 export type EnabledPluginRecord = PluginInstallRecord & { enabled: true };
-export type DisabledPluginRecord = PluginInstallRecord & {
+export type DisabledPluginRecord<
+  R extends PluginInstallRecord["resources"] = PluginInstallRecord["resources"],
+> = PluginInstallRecord & {
   enabled: false;
-  resources: {
-    skills: [];
-    prompts: [];
-    agents: [];
-    mcpServers: [];
-    hooks: [];
-  };
+  resources: R;
 };
 
 /**
- * Build the disabled form of a plugin record: preserve version /
- * resolvedSource / compatibility / installedAt, reset every resources array
- * to empty, set `enabled: false`, and stamp `updatedAt`. The empty-tuple
- * return type makes "disabled but populated" unrepresentable at the call site.
+ * ENBL-18 / D-100-10: build the disabled form of a plugin record -- set
+ * `enabled: false`, stamp `updatedAt`, preserve everything else including every
+ * `resources.*` array. The `resources: R` passthrough in the return type makes
+ * any change to the inventory a compile error here at the producer.
  */
-export function toDisabledRecord(
-  record: PluginInstallRecord,
+export function toDisabledRecord<R extends PluginInstallRecord["resources"]>(
+  record: PluginInstallRecord & { resources: R },
   updatedAt: string,
-): DisabledPluginRecord {
+): DisabledPluginRecord<R> {
   return {
     ...record,
-    resources: { skills: [], prompts: [], agents: [], mcpServers: [], hooks: [] },
     enabled: false,
     updatedAt,
   };
+}
+
+/**
+ * ENBL-05: the SOLE disabled-state predicate -- the read side of the shape
+ * {@link toDisabledRecord} writes. Every surface that asks "is this record
+ * currently disabled" consumes this one definition; a module that re-derives
+ * the rule locally is a drift twin the gate in
+ * `tests/orchestrators/reconcile/plan.test.ts` rejects. That gate WALKS the
+ * whole extension source tree rather than an allowlist of known sites, so the
+ * claim holds for a copy landing anywhere -- this module is the single
+ * exemption, because reading the boolean here IS the definition.
+ *
+ * The availability axis (`compatibility.installable`) is deliberately NOT an
+ * input. The disable orchestrator is the only writer of `enabled: false` and
+ * it places no availability guard before writing, so a soft-degraded record
+ * can be explicitly disabled too; reading both axes merged those two
+ * independent facts and left the disabled partial unrecognized everywhere.
+ * Degraded-ness and disabled-ness are orthogonal: a record with
+ * `installable: false` and `enabled: true` is degraded, NOT disabled, and
+ * must keep materializing its supported components.
+ *
+ * The `resources.*` arrays are not read either: emptiness is a consequence of
+ * disabling, never the marker (a hooks-only plugin is legitimately installed
+ * with four empty arrays, and the transient post-migration shape is enabled
+ * with five).
+ *
+ * Structural parameter so every caller's record view satisfies it directly.
+ */
+export function isRecordedButDisabled(record: { readonly enabled: boolean }): boolean {
+  return !record.enabled;
 }
 
 /**

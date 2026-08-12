@@ -26,10 +26,10 @@
 // derived from the plugin's installed resources (state-recorded).
 // `notify` owns the single softDepStatus(pi) probe per call
 // and emits the `{requires pi-subagents}` / `{requires pi-mcp}` markers
-// when (declares AND companion unloaded). RLD-04 / D-08: the list
-// orchestrator stamps the steady-state inventory row `installed` with
-// `needsReload: false`, so the OR-reduce reload-hint (RLD-02) does NOT
-// fire the `/reload to pick up changes` trailer on plain list invocations.
+// when (declares AND companion unloaded). RLD-04: the list orchestrator
+// stamps the steady-state inventory row `installed` with `needsReload: false`,
+// so the OR-reduce reload-hint (RLD-02) does NOT fire the `/reload to pick up
+// changes` trailer on plain list invocations.
 //
 // Contract (from PRD §5.3.1):
 //   - PL-1 filter union semantics: when NO filter flags (--installed /
@@ -52,12 +52,17 @@
 //   - `tests/architecture/no-orchestrator-network.test.ts` greps this source
 //     after stripComments and asserts zero gitOps surface.
 
+import { lookupDeclaredPlugin, type ManifestLookup } from "../../domain/manifest-lookup.ts";
 import { loadMarketplaceManifest, type MarketplaceManifest } from "../../domain/manifest.ts";
 import { resolveStrict, type ResolveContext } from "../../domain/resolver.ts";
 import { parsePluginSource } from "../../domain/source.ts";
 import { loadMergedScopeConfig } from "../../persistence/config-merge.ts";
 import { locationsFor, type ScopedLocations } from "../../persistence/locations.ts";
-import { loadState, type ExtensionState } from "../../persistence/state-io.ts";
+import {
+  isRecordedButDisabled,
+  loadState,
+  type ExtensionState,
+} from "../../persistence/state-io.ts";
 import { assertNever, errorMessage } from "../../shared/errors.ts";
 import {
   notifyWithContext,
@@ -70,7 +75,6 @@ import {
   narrowResolverNotes as sharedNarrowResolverNotes,
   narrowUnsupportedKinds,
 } from "../../shared/probe-classifiers.ts";
-import { isRecordedButDisabled } from "../reconcile/plan.ts";
 
 import { makePresenceProbe } from "./git-source-probe.ts";
 import { LIST_CONTEXT, type ListMsg } from "./list.messaging.ts";
@@ -97,7 +101,7 @@ import type { Scope } from "../../shared/types.ts";
  * PluginRenderStatus retained as an internal alias to keep the orchestrator's
  * bucketing logic (installed / upgradable / available / unavailable) typed.
  * Maps 1:1 onto the PluginNotificationMessage list-surface discriminator
- * subset per shared/notify.ts. RLD-04 / D-08: the installed bucket emits the
+ * subset per shared/notify.ts. RLD-04: the installed bucket emits the
  * `installed` token with `needsReload: false` (the stamped flag suppresses the
  * OR-reduce reload-hint on steady-state list invocations); the PL-1
  * `--installed` filter treats `installed`, `upgradable`, and `disabled` as the
@@ -307,6 +311,45 @@ function dependenciesFromDeclares(declaresAgents: boolean, declaresMcp: boolean)
 }
 
 /**
+ * Reasons for the degraded inventory row. INV-02 puts the absence reason
+ * FIRST: `composeReasons` joins in array order, so appending instead of
+ * prepending renders the brace with its tokens the wrong way round.
+ *
+ * The prepend is GATED on `notInManifest` because this row form is also
+ * reached by every DECLARED degraded record -- one whose manifest entry
+ * exists and whose components merely resolved unsupported. Such a record must
+ * keep its unsupported-kind tokens alone. `narrowUnsupportedKinds` stays the
+ * SOLE producer of those tokens -- this wraps its output rather than
+ * replacing it.
+ */
+function partiallyInstalledReasons(
+  record: ExtensionState["marketplaces"][string]["plugins"][string],
+  notInManifest: boolean,
+): PluginPartiallyInstalledMessage["reasons"] {
+  const kinds = narrowUnsupportedKinds(record.compatibility.unsupported);
+  return notInManifest ? ["not in manifest", ...kinds] : kinds;
+}
+
+/**
+ * ENBL-16 / D-100-07: the disabled inventory row names manifest absence and
+ * NOTHING else. Absence is a durable fact that constrains the user's next
+ * action -- `plugin enable` re-runs the install ledger, which resolves from the
+ * marketplace manifest, so a manifest-absent disabled record cannot be
+ * re-enabled and the bare row gave no warning before the attempt. The record's
+ * unsupported kinds stay suppressed: they describe runtime behavior that is
+ * currently suspended.
+ *
+ * The caller passes `notInManifest`, which is already gated on a SUCCESSFULLY
+ * read manifest (BOUND-03 / D-95-05) -- a manifest the system never parsed
+ * backs no absence claim. Returning the field as an object rather than an array
+ * keeps a still-declared record's row free of the key entirely, which is what
+ * makes it render byte-for-byte as before.
+ */
+function disabledReasonsField(notInManifest: boolean): Pick<PluginDisabledMessage, "reasons"> {
+  return notInManifest ? { reasons: ["not in manifest"] } : {};
+}
+
+/**
  * Build a `PluginInstalledMessage` (or `PluginUpgradableMessage` when the
  * manifest version differs from the installed record's version per PL-5
  * string compare) for an INSTALLED plugin record. `dependencies` derives
@@ -317,12 +360,27 @@ function dependenciesFromDeclares(declaresAgents: boolean, declaresMcp: boolean)
  * scope -- the renderer's MSG-PL-6 orphan-fold rule suppresses
  * the `[<scope>]` bracket when `p.scope === mp.scope`.
  *
- * Inventory-vs-transition discriminator (RLD-04 / D-08): the steady-state
- * list row emits the `installed` token with `needsReload: false`. The
- * stamped flag suppresses the OR-reduce reload-hint (RLD-02) for inventory,
- * and `reasons` is OMITTED so the orphan-rewake brace never leaks onto a
- * steady-state row; the rendered byte form `● <name> [<scope>] v<ver>
- * (installed)` is preserved.
+ * Inventory-vs-transition discriminator: the steady-state list row emits the
+ * `installed` token with `needsReload: false`, and that stamped flag
+ * suppresses the OR-reduce reload-hint (RLD-02) for inventory rows.
+ *
+ * `reasons` on a steady-state inventory row may carry DURABLE facts about the
+ * record's relationship to its marketplace -- the absence brace (INV-01) stays
+ * true across reloads until either the manifest or the installation changes --
+ * but not TRANSIENT conditions tied to a pending action (D-95-02).
+ * Under D-95-01 that split is documented convention for future authors, not a
+ * code-enforced gate: this builder stamps whatever typed reasons apply and the
+ * render map passes them through, with no allowlist in the render path.
+ *
+ * The reload trailer is a SEPARATE axis: `shouldEmitReloadHint` reduces over
+ * `needsReload` only and never reads `reasons`, so stamping a reason here
+ * cannot re-trigger it.
+ *
+ * `lookup` carries the record's relationship to its manifest as ONE value, so
+ * the `{not in manifest}` brace and the entry-derived `(upgradable)` /
+ * `description` fields cannot disagree: an entry alongside an absence claim is
+ * unrepresentable. A manifest plus a separate consistency flag is the drift
+ * shape that produced the BOUND-03 defect (WR-07).
  *
  * PL-4: `description` is sourced from the manifest entry (when available).
  * The installed state record does not carry description; if the manifest is
@@ -334,7 +392,7 @@ async function installedRowMessage(
   marketplaceScope: Scope,
   marketplaceRoot: string,
   record: ExtensionState["marketplaces"][string]["plugins"][string],
-  manifestEntry: MarketplaceManifest["plugins"][number] | undefined,
+  lookup: ManifestLookup,
   cwd: string,
 ): Promise<
   | PluginInstalledMessage
@@ -343,8 +401,10 @@ async function installedRowMessage(
   | PluginPartiallyInstalledMessage
   | PluginPartiallyUpgradableMessage
 > {
-  const declaresAgents = record.resources.agents.length > 0;
-  const declaresMcp = record.resources.mcpServers.length > 0;
+  const manifestEntry = lookup.kind === "declared" ? lookup.entry : undefined;
+  // BOUND-03 / D-95-05: only a READ manifest that omits the record backs the
+  // claim -- `unverified` says nothing about a manifest the system never saw.
+  const notInManifest = lookup.kind === "absent";
   const upgradable =
     manifestEntry?.version !== undefined && manifestEntry.version !== record.version;
 
@@ -358,12 +418,14 @@ async function installedRowMessage(
   const descriptionField: { readonly description?: string } =
     manifestEntry?.description === undefined ? {} : { description: manifestEntry.description };
 
-  // D-54-01 / ENBL-04: a recorded-but-disabled record (empty-resources +
-  // `installable: true` -- the canonical `isRecordedButDisabled` marker the
-  // disable orchestrator writes) renders the `(disabled)` inventory token,
-  // NOT `(installed)`. Checked BEFORE the upgradable branch: the version pin
-  // is frozen while disabled (ENBL-02), so a manifest-version drift must not
-  // surface a misleading `(upgradable)` on a plugin with no artifacts.
+  // D-54-01 / ENBL-04 / ENBL-05: a recorded-but-disabled record -- the explicit
+  // `enabled: false` the disable orchestrator writes, which is the whole
+  // `isRecordedButDisabled` marker -- renders the `(disabled)` inventory token,
+  // NOT `(installed)` and not `(partially-installed)`. A degraded record can be
+  // disabled too, and this guard catches it before the classifier does.
+  // Checked BEFORE the upgradable branch: the version pin is frozen while
+  // disabled (ENBL-02), so a manifest-version drift must not surface a
+  // misleading `(upgradable)` on a plugin with no artifacts.
   if (isRecordedButDisabled(record)) {
     return {
       // D-03/D-06: a disabled INVENTORY row (list surface) is steady state,
@@ -373,10 +435,20 @@ async function installedRowMessage(
       version: record.version,
       ...scopeField,
       ...descriptionField,
+      // ENBL-16 / D-100-07: `{not in manifest}` and no other reason.
+      ...disabledReasonsField(notInManifest),
       severity: "info",
       needsReload: false,
     };
   }
+
+  // ENBL-15 / D-100-06: derived BELOW the disabled early return, so a disabled
+  // record's retained inventory (ENBL-18 keeps `agents` / `mcpServers`
+  // populated) is not even in scope where its row is built. The disabled row
+  // must carry no soft-dependency marker: those markers state a runtime concern
+  // that is suspended while the plugin is disabled.
+  const declaresAgents = record.resources.agents.length > 0;
+  const declaresMcp = record.resources.mcpServers.length > 0;
 
   // D-67-02 / LIST-02: the finer installed-inventory state is derived by the
   // SHARED `classifyInstalledRecord` (the same classifier the completion
@@ -442,7 +514,7 @@ async function installedRowMessage(
     return {
       status: "partially-installed",
       name: pluginName,
-      reasons: narrowUnsupportedKinds(record.compatibility.unsupported),
+      reasons: partiallyInstalledReasons(record, notInManifest),
       version: record.version,
       ...scopeField,
       ...descriptionField,
@@ -482,18 +554,27 @@ async function installedRowMessage(
     };
   }
 
+  // INV-01: under `exactOptionalPropertyTypes` an optional field is added by
+  // spreading a conditionally empty object -- never by `reasons: cond ? [...]
+  // : undefined`. Same idiom as `scopeField` / `descriptionField` above.
+  // The absence reason is already a closed-set member, so the token set does
+  // not grow (COMPAT-01). `NonNullable` because the indexed access on an
+  // optional property yields `| undefined`, which the target rejects.
+  const notInManifestField: {
+    readonly reasons?: NonNullable<PluginInstalledMessage["reasons"]>;
+  } = notInManifest ? { reasons: ["not in manifest"] } : {};
+
   return {
-    // RLD-04 / D-08: the list-surface inventory row is `installed` with
-    // `needsReload: false` -- the stamped flag IS the old `present`
-    // reload-suppression (the OR-reduce reload-hint stays suppressed for
-    // steady-state inventory). `reasons` is OMITTED so the orphan-rewake brace
-    // never leaks onto an inventory row.
+    // The list-surface inventory row is `installed` with `needsReload: false`
+    // -- the stamped flag IS the old `present` reload-suppression (the
+    // OR-reduce reload-hint stays suppressed for steady-state inventory).
     status: "installed",
     name: pluginName,
     dependencies: dependenciesFromDeclares(declaresAgents, declaresMcp),
     version: record.version,
     ...scopeField,
     ...descriptionField,
+    ...notInManifestField,
     severity: "info",
     needsReload: false,
   };
@@ -718,6 +799,12 @@ async function availableRowMessage(
  * emitted as `(available)` rows because they are already installed in
  * the OTHER scope under the CLONED marketplace record (orphan-fold rule).
  *
+ * `scopedManifest` is the WHOLE manifest-load result rather than the manifest
+ * alone (D-95-04): the installed rows must tell "the manifest omits this
+ * record" apart from "the manifest could not be read". A caller that could
+ * pass a manifest and a separate consistency flag is the drift shape that
+ * produced the BOUND-03 defect, so there is one discriminated value, not two.
+ *
  * Returns the rows in stable (state-iteration + manifest-order) order;
  * the orchestrator applies the final MSG-GR-3 sort at the block boundary.
  */
@@ -726,7 +813,7 @@ async function enumerateMarketplacePlugins(
   mpRecord: ExtensionState["marketplaces"][string],
   pluginScope: Scope,
   marketplaceScope: Scope,
-  manifest: MarketplaceManifest | undefined,
+  scopedManifest: ScopedManifest,
   excludeFromAvailable: ReadonlySet<string> = new Set(),
 ): Promise<ListMsg[]> {
   const rows: ListMsg[] = [];
@@ -735,14 +822,13 @@ async function enumerateMarketplacePlugins(
 
   // Installed bucket.
   for (const [pluginName, record] of Object.entries(installedRecords)) {
-    const manifestEntry = manifest?.plugins.find((p) => p.name === pluginName);
     const row = await installedRowMessage(
       pluginName,
       pluginScope,
       marketplaceScope,
       mpRecord.marketplaceRoot,
       record,
-      manifestEntry,
+      manifestLookupFor(scopedManifest, pluginName),
       opts.cwd,
     );
     // Installed-inventory rows are matched on render status; the resolver
@@ -753,11 +839,11 @@ async function enumerateMarketplacePlugins(
   }
 
   // Available / unavailable buckets (manifest entries not in state).
-  if (manifest === undefined) {
+  if (!scopedManifest.ok) {
     return rows;
   }
 
-  for (const manifestEntry of manifest.plugins) {
+  for (const manifestEntry of scopedManifest.manifest.plugins) {
     if (installedNames.has(manifestEntry.name)) {
       continue;
     }
@@ -786,19 +872,62 @@ async function enumerateMarketplacePlugins(
   return rows;
 }
 
-interface ScopedManifest {
-  readonly manifest: MarketplaceManifest | undefined;
-  readonly loadError: string | undefined;
+/**
+ * The outcome of one marketplace-manifest read, DISCRIMINATED on `ok` so
+ * "loaded" and "could not be read" are a single state rather than a manifest
+ * plus a separate flag that can drift out of agreement (BOUND-03 / D-95-04).
+ * `ok: false` is the ONLY state in which an absence claim is unsupported, so
+ * the enumerator tests it once.
+ */
+type ScopedManifest =
+  | { readonly ok: true; readonly manifest: MarketplaceManifest }
+  | { readonly ok: false; readonly loadError: string };
+
+/**
+ * Resolve one installed record against its marketplace's manifest read.
+ *
+ * BOUND-03 / D-95-05: a failed read is `unverified`, so the row keeps its bare
+ * `(installed)` form -- the row is preserved and only the unverified claim is
+ * suppressed. That arm is decided HERE and stays here: list is the only surface
+ * that continues rendering past a failed read, so it is an I/O fact about this
+ * surface, not a membership fact the domain rule could hold.
+ *
+ * INV-01: a successful read that omits the record IS an absence, on the fold
+ * path as much as on a same-scope block. That half is `lookupDeclaredPlugin`
+ * (D-99-02a) -- the one writing of exact string identity, shared with `info`
+ * and `update` so no surface can judge absence by a different rule.
+ */
+function manifestLookupFor(scopedManifest: ScopedManifest, pluginName: string): ManifestLookup {
+  if (!scopedManifest.ok) {
+    return { kind: "unverified" };
+  }
+
+  return lookupDeclaredPlugin(scopedManifest.manifest, pluginName);
 }
 
+/**
+ * Read the manifest THIS marketplace record names. The record's own manifest
+ * is the authority for every claim the record's rows make about manifest
+ * membership (INV-01), including on the cross-scope orphan fold: a folded row
+ * describes the project-scope record, so its absence is judged against the
+ * manifest that record points at, not against the user block's header path.
+ *
+ * D-96-02 settles the scope of that authority: a folded row describes its own
+ * record's manifest for ALL of its facts -- the absence claim, the upgradable
+ * derivation and the description -- because all three read the single
+ * {@link ManifestLookup} value produced for that manifest, which makes
+ * disagreement between them unrepresentable. BOUND-01 is the other half: a
+ * marketplace whose OWN manifest cannot be read renders the bare `(failed)`
+ * header with no child rows, folded rows included.
+ */
 async function loadMarketplaceManifestSoftly(
   mpRecord: ExtensionState["marketplaces"][string],
 ): Promise<ScopedManifest> {
   try {
     const manifest = await loadManifestSoftly(mpRecord.manifestPath);
-    return { manifest, loadError: undefined };
+    return { ok: true, manifest };
   } catch (err) {
-    return { manifest: undefined, loadError: errorMessage(err) };
+    return { ok: false, loadError: errorMessage(err) };
   }
 }
 
@@ -850,7 +979,9 @@ async function buildMarketplaceMessage(args: {
   excludeFromAvailable?: ReadonlySet<string>;
 }): Promise<BuiltMarketplace> {
   const { opts, mpName, mpScope, mpRecord, autoupdate, extraPlugins, excludeFromAvailable } = args;
-  const { manifest, loadError } = await loadMarketplaceManifestSoftly(mpRecord);
+  // Bind the WHOLE load result once: the same value feeds the failed-header
+  // guard below and the enumeration's absence gate (D-95-04).
+  const scopedManifest = await loadMarketplaceManifestSoftly(mpRecord);
 
   // Unparseable manifest: catalog `unparseable-mp` form (lines 215-226)
   // -- bare `(failed)` marketplace header with `plugins: []`. No
@@ -859,7 +990,7 @@ async function buildMarketplaceMessage(args: {
   // plugins: []" contract. The autoupdate detail also drops on failure --
   // the renderer's failed-status arm at shared/notify.ts:593 emits a
   // bare header with no `<autoupdate>` marker.
-  if (loadError !== undefined) {
+  if (!scopedManifest.ok) {
     return {
       mp: {
         name: mpName,
@@ -879,7 +1010,7 @@ async function buildMarketplaceMessage(args: {
     mpRecord,
     mpScope,
     mpScope,
-    manifest,
+    scopedManifest,
     excludeFromAvailable,
   );
   const merged: readonly ListMsg[] = [...ownPlugins, ...extraPlugins];
@@ -974,7 +1105,12 @@ export async function loadPluginListPayload(
       // Each folded row carries scope: "project" (D-13-18 actual install
       // scope), surfaced via the renderer's orphan-fold rule when
       // `p.scope !== mp.scope`.
-      const { manifest } = await loadMarketplaceManifestSoftly(projectMp);
+      // BOUND-03 / D-95-04: bind the WHOLE result. Taking `manifest` alone
+      // here dropped the load-failure state, which let a folded row claim an
+      // absence about a project-side manifest that never parsed. INV-01: the
+      // project record's OWN manifest is the authority for its rows' absence
+      // claims -- the folded row is a statement about that record.
+      const projectScopedManifest = await loadMarketplaceManifestSoftly(projectMp);
       // WR-02: filter to ONLY installed/upgradable rows. The project-side
       // enumeration also returns `available` and `unavailable` bucket rows
       // from the same shared manifest (cloned `marketplaceRoot`); folding
@@ -989,9 +1125,9 @@ export async function loadPluginListPayload(
         projectMp,
         "project",
         "user",
-        manifest,
+        projectScopedManifest,
       );
-      // RLD-04 / D-08: `installedRowMessage` emits `status: "installed"` with
+      // RLD-04: `installedRowMessage` emits `status: "installed"` with
       // `needsReload: false` for the steady-state inventory row. The
       // carry-over filter MUST discriminate on `"installed"` (plus the
       // `"upgradable"` and ENBL-04 `"disabled"` arms) so orphan-folded rows
@@ -1092,12 +1228,12 @@ function sortPluginsInBlock<M extends PluginNotificationMessage>(
   // SNM-11: `available` / `unavailable` variants have no `scope` field by
   // construction; the other list-surface variants (`installed` /
   // `upgradable`) carry an optional `scope`. The status-narrowing switch
-  // is the only safe access path under TS strict. RLD-04 / D-08: the list
-  // orchestrator emits the steady-state inventory row as `installed` (with
-  // `needsReload: false`); the same `installed` token also carries the
-  // cascade transition. The body `return p.scope ?? marketplaceScope`
-  // preserves the cross-scope orphan-fold scope on a
-  // `PluginInstalledMessage` (SNM-11 / D-13-18) instead of silently
+  // is the only safe access path under TS strict. RLD-04: the list orchestrator
+  // emits the steady-state inventory row as `installed` (with
+  // `needsReload: false`); the same `installed` token also carries the cascade
+  // transition. The body
+  // `return p.scope ?? marketplaceScope` preserves the cross-scope orphan-fold
+  // scope on a `PluginInstalledMessage` (SNM-11 / D-13-18) instead of silently
   // overwriting it with `marketplaceScope`.
   const scopeOf = (p: PluginNotificationMessage): Scope => {
     switch (p.status) {

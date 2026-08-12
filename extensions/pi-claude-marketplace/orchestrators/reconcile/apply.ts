@@ -49,6 +49,7 @@ import { resolveStrict } from "../../domain/resolver.ts";
 import { loadMergedScopeConfig } from "../../persistence/config-merge.ts";
 import { locationsFor } from "../../persistence/locations.ts";
 import { migrateFirstRunConfig } from "../../persistence/migrate-config.ts";
+import { isRecordedButDisabled } from "../../persistence/state-io.ts";
 import { PluginShapeError, StateLockHeldError } from "../../shared/errors.ts";
 import { EXTENSION_VERSION } from "../../shared/extension-version.ts";
 import { pathExists } from "../../shared/fs-utils.ts";
@@ -75,6 +76,10 @@ import type { Dependency } from "../../shared/concerns/soft-dep.ts";
 import type { Reason } from "../../shared/notify.ts";
 import type { Scope } from "../../shared/types.ts";
 import type { GitOps } from "../marketplace/shared.ts";
+import type {
+  EnableDegradationSignals,
+  EnableDisablePluginOutcome,
+} from "../plugin/enable-disable.ts";
 
 /**
  * RECON-01..05 options bundle. When `scope` is omitted, applyReconcile fans
@@ -599,6 +604,11 @@ async function applyPluginInstalls(
             result.postCommitWarnings.length > 0 && {
               postCommitWarnings: result.postCommitWarnings,
             }),
+          // SURF-05 / D-63-08 / IN-07: propagate the orphan-rewake flag so the
+          // reconcile composer pushes the `orphan rewake` token onto the
+          // `(installed)` row, exactly as the enable arm below already does for
+          // the same ledger run. Omitted when false (NREG-01).
+          ...(result.orphanRewake === true && { orphanRewake: true }),
           // WARN-01 / D-86-03: propagate the degraded-component kinds so the
           // reconcile composer can raise the `(installed)` row to `warning`
           // and push the `malformed skill` / `malformed command` token.
@@ -637,6 +647,13 @@ interface PluginToggleAxes {
     marketplace: string;
     plugin: string;
     version?: string;
+    /**
+     * ENBL-07 / SURF-05 / WARN-01: the enable axis' degradation signals.
+     * Always absent on the disable axis (a disable drops nothing and
+     * materializes nothing -- it unstages everything), and absent on a clean
+     * enable, so the disable arm's outcome shape is unchanged.
+     */
+    degradation?: EnableDegradationSignals;
   }) => PerEntryOutcome;
   readonly buildFailed: (info: {
     scope: Scope;
@@ -644,6 +661,27 @@ interface PluginToggleAxes {
     plugin: string;
     reason: Reason;
   }) => PerEntryOutcome;
+}
+
+/**
+ * Lift the enable arm's degradation signals off the orchestrated outcome. Each
+ * field is omitted when empty (`exactOptionalPropertyTypes`), so a clean enable
+ * yields `{}` and its projected row is byte-identical (NREG-01).
+ *
+ * SEV-01 / D-98-02: the staged-count verdicts ride here too -- they drive the
+ * projected row's dependency list, mirroring the install arm's
+ * `dependenciesFromInstall` derivation.
+ */
+function degradationFromEnable(
+  result: Extract<EnableDisablePluginOutcome, { status: "enabled" }>,
+): EnableDegradationSignals {
+  return {
+    ...(result.unsupported !== undefined && { unsupported: result.unsupported }),
+    ...(result.orphanRewake === true && { orphanRewake: true }),
+    ...(result.degradedKinds !== undefined && { degradedKinds: result.degradedKinds }),
+    ...(result.stagedAgents === true && { stagedAgents: true }),
+    ...(result.stagedMcpServers === true && { stagedMcpServers: true }),
+  };
 }
 
 async function applyPluginToggles(
@@ -677,12 +715,19 @@ async function applyPluginToggles(
       });
 
       if (result.status === successStatus) {
+        // ENBL-07 / SURF-05 / WARN-01: only the enable arm carries degradation
+        // signals (a disable materializes nothing, so it degrades nothing). The
+        // literal comparison is what narrows the union -- `successStatus` is a
+        // variable, so the guard above does not narrow on its own.
+        const degradation: EnableDegradationSignals =
+          result.status === "enabled" ? degradationFromEnable(result) : {};
         outcomes.push(
           axes.buildSuccess({
             scope: op.scope,
             marketplace: op.marketplace,
             plugin: op.plugin,
             ...(result.version !== undefined && { version: result.version }),
+            ...(Object.keys(degradation).length > 0 && { degradation }),
           }),
         );
       } else if (result.status === "failed") {
@@ -796,12 +841,25 @@ async function applyPlan(
   await applyPluginInstalls(opts, plan, outcomes);
   await applyPluginToggles(opts, plan.pluginsToEnable, outcomes, {
     enable: true,
-    buildSuccess: (info) => ({ kind: "plugin-enabled", ...info }),
+    // The signals ride `PluginEnabledOutcome` FLAT (it extends
+    // `EnableDegradationSignals`), so the nested carrier is spread here.
+    buildSuccess: ({ degradation, ...info }) => ({
+      kind: "plugin-enabled",
+      ...info,
+      ...degradation,
+    }),
     buildFailed: (info) => ({ kind: "plugin-enable-failed", ...info }),
   });
   await applyPluginToggles(opts, plan.pluginsToDisable, outcomes, {
     enable: false,
-    buildSuccess: (info) => ({ kind: "plugin-disabled", ...info }),
+    // `degradation` is destructured off and DISCARDED: a disable materializes
+    // nothing, so it has no degradation signals to report. Object spread
+    // bypasses the excess-property check, so dropping the field explicitly is
+    // what keeps a stray signal off the disabled outcome.
+    buildSuccess: ({ degradation: _degradation, ...info }) => ({
+      kind: "plugin-disabled",
+      ...info,
+    }),
     buildFailed: (info) => ({ kind: "plugin-disable-failed", ...info }),
   });
   applySourceMismatches(plan, outcomes);
@@ -950,7 +1008,7 @@ function hasForceInstalledPlugin(state: ExtensionState): boolean {
  * snapshot; reinstallPlugin self-locks and re-reads fresh state per plugin
  * (CR-01).
  *
- * WR-03: the snapshot predates applyPlan, which may have re-materialized a
+ * RECON-04 single-emit: the snapshot predates applyPlan, which may have re-materialized a
  * partially-installed plugin in the SAME load (e.g. a disable/enable that emits its
  * own transition row). Skip any plugin already represented in this scope's
  * accumulated outcomes so a single load can never emit two rows for one plugin
@@ -1002,8 +1060,9 @@ async function scanForceInstalledBackfills(
 
 /**
  * Per-plugin fault isolation for one scanned record. Applies the D-68-03
- * partially-installed filter + the WR-03 already-touched dedupe (both benign skips
- * returning `false`), then runs `maybeBackfillPlugin` inside a try/catch.
+ * partially-installed filter, the ENBL-08 disabled-record filter and the
+ * RECON-04 already-touched dedupe (all three benign skips returning `false`), then runs
+ * `maybeBackfillPlugin` inside a try/catch.
  *
  * SF-02 lets a genuine manifest I/O error (corrupt / permission-denied cached
  * manifest) propagate out of `maybeBackfillPlugin`. Without this guard that throw
@@ -1034,7 +1093,19 @@ async function backfillOnePluginIsolated(
     return false;
   }
 
-  // WR-03: applyPlan already touched this plugin this load -- don't double-emit /
+  // ENBL-08: never scan a record the user disabled. The backfill re-materializes
+  // through reinstall, whose record write sets `enabled: true` unconditionally,
+  // so scanning a disabled record would reverse an explicit user disable at load
+  // time -- restoring that plugin's hooks, MCP servers and PATH entries with no
+  // command and no prompt. Availability and disabled-ness are orthogonal axes
+  // (ENBL-05), so the filter above does not cover this one. Read through the
+  // single predicate rather than the boolean, so this site cannot drift from
+  // the rule `persistence/state-io.ts` owns.
+  if (isRecordedButDisabled(record)) {
+    return false;
+  }
+
+  // RECON-04: applyPlan already touched this plugin this load -- don't double-emit /
   // re-materialize over it.
   if (alreadyTouched.has(`${marketplace} ${plugin}`)) {
     return false;
@@ -1055,11 +1126,15 @@ async function backfillOnePluginIsolated(
 }
 
 /**
- * Test seam (mirrors reinstall.ts's `__test_*` exports): exercise the WR-03
- * dedupe directly with a pre-populated `outcomes` array standing in for a
- * same-load applyPlan transition (the planner's enable bucket requires
- * installable === true, so a partially-installed plugin cannot reach it through a
- * real plan -- the seam injects the precondition).
+ * Test seam (mirrors reinstall.ts's `__test_*` exports): run one scan in
+ * isolation over a caller-supplied `outcomes` array. Pre-populating that array
+ * stands in for a same-load applyPlan transition, which is the input the
+ * RECON-04 dedupe reads; passing it empty exercises the scan's own filters instead.
+ *
+ * ENBL-05: the planner's enable bucket is keyed on the `enabled` boolean alone,
+ * so a partially-installed plugin CAN reach it through a real plan. The seam is
+ * a convenience for driving the scan directly, not a stand-in for an
+ * unreachable precondition.
  */
 export { scanForceInstalledBackfills as __test_scanForceInstalledBackfills };
 
@@ -1162,6 +1237,14 @@ async function maybeBackfillPlugin(
     // shared `narrowUnsupportedKinds` seam. The `installable` arm projects to
     // the brace-less `(installed)` row, so its unsupported set is empty.
     unsupported: resolved.state === "partially-available" ? resolved.unsupported : [],
+    // SURF-05 / WARN-01 / WR-04: the other two ledger signals, threaded exactly
+    // as the install and enable arms thread them. The orphan-rewake fact rides
+    // this backfill's own offline resolution; the malformed-frontmatter kinds
+    // ride the reinstall outcome, because the re-materialize is what produced
+    // them. Each is omitted when empty (NREG-01).
+    ...(resolved.orphanRewake === true && { orphanRewake: true }),
+    ...(outcome.degradedKinds !== undefined &&
+      outcome.degradedKinds.length > 0 && { degradedKinds: outcome.degradedKinds }),
   });
   return false;
 }

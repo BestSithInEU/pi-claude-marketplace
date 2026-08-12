@@ -30,16 +30,15 @@ import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
+import { BUCKET_A_EVENTS } from "../../domain/components/hook-events.ts";
 import {
-  BUCKET_A_EVENTS,
-  TOOL_EVENTS,
-  type ToolEvent,
-} from "../../domain/components/hook-events.ts";
-import {
+  hookSummaryEntriesFromPersisted,
   parseHooksConfig,
+  projectHookSummaryEntries,
   type DroppedHook,
-  type HooksConfig,
+  type HookConfigParseResult,
 } from "../../domain/components/hooks.ts";
+import { lookupDeclaredPlugin } from "../../domain/manifest-lookup.ts";
 import { loadMarketplaceManifest, type MarketplaceManifest } from "../../domain/manifest.ts";
 import {
   resolveStrict,
@@ -51,8 +50,13 @@ import {
 import { parsePluginSource, type GitBackedSource, type ParsedSource } from "../../domain/source.ts";
 import { loadMergedScopeConfig } from "../../persistence/config-merge.ts";
 import { locationsFor, type ScopedLocations } from "../../persistence/locations.ts";
-import { loadState, type ExtensionState } from "../../persistence/state-io.ts";
-import { assertNever } from "../../shared/errors.ts";
+import {
+  isRecordedButDisabled,
+  loadState,
+  type ExtensionState,
+} from "../../persistence/state-io.ts";
+import { hookDebugLog } from "../../shared/debug-log.ts";
+import { assertNever, errorMessage } from "../../shared/errors.ts";
 import { classifyGitTransportFailure } from "../../shared/git-failure-classifiers.ts";
 import {
   notifyWithContext,
@@ -60,14 +64,13 @@ import {
   type Plural,
 } from "../../shared/notify-context.ts";
 import { notify } from "../../shared/notify.ts";
-import { assertPathInside } from "../../shared/path-safety.ts";
+import { PathContainmentError, assertPathInside } from "../../shared/path-safety.ts";
 import {
   narrowProbeError,
   narrowResolverNotes,
   narrowUnsupportedKinds,
 } from "../../shared/probe-classifiers.ts";
 import { DEFAULT_CREDENTIAL_OPS, buildAuthForHost, hostFromCloneUrl } from "../auth-host.ts";
-import { isRecordedButDisabled } from "../reconcile/plan.ts";
 
 import {
   canonicalCloneUrl,
@@ -80,7 +83,7 @@ import { makePresenceProbe } from "./git-source-probe.ts";
 import { PLUGIN_INFO_CONTEXT, type PluginInfoCascadeMsg } from "./info.messaging.ts";
 
 import type { ExtensionAPI, ExtensionContext } from "../../platform/pi-api.ts";
-import type { ClaudeHookEvent, HookSummaryEntry } from "../../shared/concerns/hooks.ts";
+import type { HookSummaryEntry } from "../../shared/concerns/hooks.ts";
 import type {
   ContentReason,
   NotificationMessage,
@@ -89,11 +92,6 @@ import type {
 } from "../../shared/notify.ts";
 import type { Scope } from "../../shared/types.ts";
 import type { AuthAttemptResult, CredentialOps, DeviceFlowHttp } from "../auth-host.ts";
-
-// SURF-01: TOOL_EVENTS is a string[] tuple; rewrap as a Set
-// for O(1) membership tests in the HookSummaryEntry projector. Module-
-// scope so the Set is allocated once across all info.ts call sites.
-const TOOL_EVENT_SET: ReadonlySet<string> = new Set<string>(TOOL_EVENTS);
 
 // INFO-05: BUCKET_A_EVENTS is a string[] tuple; rewrap as a Set for O(1)
 // membership tests in `readLenientHookSummary`'s per-event supported flag.
@@ -354,50 +352,6 @@ function normalizeDependencies(raw: unknown): readonly string[] | undefined {
 }
 
 /**
- * SURF-01 / D-63-04 / D-63-06: project a parsed `HooksConfig` to the
- * `HookSummaryEntry[]` shape the renderer consumes. One entry per
- * (event, group) tuple in declaration order from the parsed file --
- * `Object.entries` and `Array` iteration both preserve insertion order
- * for plain objects (the JSON.parse output `parseHooksConfig` returns),
- * so the rendered order matches the on-disk authoring order.
- *
- * Tool events (`PreToolUse` / `PostToolUse` / `PostToolUseFailure`)
- * carry the group's `matcher` (defaulting to the empty string when the
- * group's `matcher` is absent -- match-all per MATCH-01); non-tool
- * events do not carry one. Granularity is per-GROUP, not per-handler:
- * the renderer surfaces `event(matcher)` once per group regardless of
- * how many handlers the group declares.
- *
- * Pure and total: never throws. The supportability gate in
- * `checkMatcherSupportability` has already accepted every event key as
- * a `BucketAEvent`, so the tool-event discriminator is a closed-set
- * membership check against `TOOL_EVENTS`.
- */
-function projectHookSummaryEntries(parsed: HooksConfig): readonly HookSummaryEntry[] {
-  const entries: HookSummaryEntry[] = [];
-  for (const [eventName, groups] of Object.entries(parsed)) {
-    for (const group of groups) {
-      if (TOOL_EVENT_SET.has(eventName)) {
-        entries.push({
-          event: eventName as ToolEvent,
-          matcher: group.matcher ?? "",
-        });
-      } else {
-        // Cast: the assertion is upheld by the supportability gate's
-        // bucket-A admission check (every event key surviving
-        // `parseHooksConfig.ok = true` is a `ClaudeHookEvent`, and the
-        // tool-event guard above excludes the `ToolEvent` subset).
-        entries.push({
-          event: eventName as Exclude<ClaudeHookEvent, ToolEvent>,
-        });
-      }
-    }
-  }
-
-  return entries;
-}
-
-/**
  * PHOOK-05 / D-71-05: project the partition's `dropped` enumeration to
  * lenient `HookSummaryEntry` rows so a partially-available plugin enumerates
  * the handlers the install path WILL drop. A `kind:"event"` drop (a whole
@@ -413,7 +367,12 @@ function projectDroppedHookEntries(dropped: readonly DroppedHook[]): readonly Ho
   const seen = new Set<string>();
   for (const drop of dropped) {
     const matcher = drop.kind === "event" ? undefined : drop.matcher;
-    const key = `${drop.event} ${matcher ?? ""}`;
+    // The separator is U+0000 because it cannot occur in an event name or a
+    // matcher, so no `(event, matcher)` pair can collide with another. Written
+    // as an ESCAPE rather than a literal control character: a raw NUL byte in
+    // the source makes `grep` and other line tools classify this whole file as
+    // binary and refuse to print matches.
+    const key = `${drop.event}\u0000${matcher ?? ""}`;
     if (seen.has(key)) {
       continue;
     }
@@ -428,6 +387,24 @@ function projectDroppedHookEntries(dropped: readonly DroppedHook[]): readonly Ho
   }
 
   return entries;
+}
+
+/**
+ * MATCH-03 / A1 projectRoot fallback: the single `parseHooksConfig` invocation
+ * both info-surface hook readers share, mirroring the resolver's
+ * `readStandaloneHooks` call site.
+ *
+ * `skipIfMap: true` short-circuits the `if`-predicate side-Map, so `compileIf`
+ * is never invoked and `ifCtx` is never read -- the info surface consumes only
+ * the parsed value. The context is nonetheless built from a REAL `cwd` supplied
+ * by the caller rather than fabricated here, so the day `skipIfMap` is dropped
+ * there is ONE place that decides which project root predicates compile
+ * against, and callers that know their cwd already pass the right one.
+ */
+function parseHooksForInfo(raw: string, cwd: string): HookConfigParseResult<null> {
+  const ifCtx = { homedir: homedir(), cwd, projectRoot: cwd };
+  const noopCompileIf = (): null => null;
+  return parseHooksConfig(raw, ifCtx, noopCompileIf, { skipIfMap: true });
 }
 
 /**
@@ -460,14 +437,13 @@ async function readHookSummaryEntries(
   hooksConfigPath: string,
 ): Promise<readonly HookSummaryEntry[] | undefined> {
   const raw = await readFile(path.join(pluginRoot, hooksConfigPath), "utf8");
-  // MATCH-03 / A1 projectRoot fallback: mirrors the resolver's
-  // `readStandaloneHooks` call site. The info surface only consumes the
-  // installable-verdict + parsed value; the `if`-field side-Map is
-  // discarded via `skipIfMap: true`, and the no-op `compileIf` is never
-  // invoked.
-  const ifCtx = { homedir: homedir(), cwd: process.cwd(), projectRoot: process.cwd() };
-  const noopCompileIf = (): null => null;
-  const parsed = parseHooksConfig(raw, ifCtx, noopCompileIf, { skipIfMap: true });
+  // The manifest-backed call chain that reaches this reader does not thread the
+  // command's `cwd` (only `ScopedLocations`, which does not carry one), so the
+  // process cwd stands in. Inert today -- `parseHooksForInfo` never reads the
+  // context -- but it is the one remaining site that would need the real cwd if
+  // `skipIfMap` were ever dropped. The state-only reader below passes the
+  // command's own `cwd`.
+  const parsed = parseHooksForInfo(raw, process.cwd());
   if (!parsed.ok) {
     return undefined;
   }
@@ -475,6 +451,94 @@ async function readHookSummaryEntries(
   const supported = projectHookSummaryEntries(parsed.value);
   const dropped = projectDroppedHookEntries(parsed.dropped);
   return [...supported, ...dropped];
+}
+
+/**
+ * INFO-11 / D-96-03 / D-57-03 / NFR-10: reconstruct the hook inventory for a
+ * record whose manifest entry is gone. The installation record carries only the
+ * hooks container slug, so the entries survive nowhere but the MATERIALIZED
+ * configuration the install ledger wrote at `<hooksDir>/<slug>/hooks.json`.
+ * This is the only disk read the state-only arm performs, which is what makes a
+ * row-level read reason attributable to hooks without a hooks-specific token.
+ *
+ * `resources.hooks[i]` is state-supplied data used as a path component, so
+ * `assertPathInside` runs BEFORE `readFile` -- the same read-site chokepoint the
+ * hooks hydrate path uses, mirroring the write-site guard. A corrupted record
+ * carrying a traversal slug is refused, never opened.
+ *
+ * D-96-03 truthful split, carried by the RESULT DISCRIMINANT rather than by the
+ * presence of an `entries` field: `none` is a real negative (the record names no
+ * hooks container), `listed` is a completed read, and `degraded` is a container
+ * that exists but could not be listed. An optional-field shape let the caller
+ * conflate the first and third, which is exactly the case where silence must
+ * NOT read as verified absence. No failure shape fails the info block -- a throw
+ * collapses through the shared `narrowProbeError` ladder and a `{ok:false}`
+ * parse to `unparseable`, and the caller stamps that reason while every other
+ * fact still renders.
+ *
+ * A failure returns immediately and discards entries collected from earlier
+ * slugs: a half-listed hooks block claims a completeness it does not have,
+ * which is a worse lie than omitting the block and naming the failure.
+ */
+type StateOnlyHookRead =
+  | { readonly kind: "none" }
+  | { readonly kind: "listed"; readonly entries: readonly HookSummaryEntry[] }
+  | { readonly kind: "degraded"; readonly reason: ContentReason };
+
+async function readStateOnlyHookEntries(
+  slugs: readonly string[],
+  locations: ScopedLocations,
+  cwd: string,
+): Promise<StateOnlyHookRead> {
+  if (slugs.length === 0) {
+    return { kind: "none" };
+  }
+
+  // D-57-03: the install ledger writes zero or one slug today; iterate
+  // defensively for forward-compat, as the hydrate path does.
+  const entries: HookSummaryEntry[] = [];
+  for (const slug of slugs) {
+    try {
+      // D-57-03: composed inline rather than through the hooks bridge's
+      // `hookConfigPathFor`, which `bridges/hooks/index.ts` documents as a
+      // private helper the barrel deliberately does not re-export. The sibling
+      // read site (`bridges/hooks/event-router.ts`'s hydrate path) composes the
+      // same one-line join for the same reason. NFR-10 containment is carried
+      // by the `assertPathInside` chokepoint below, not by the composer.
+      const hooksJsonPath = path.join(locations.hooksDir, slug, "hooks.json");
+      await assertPathInside(locations.hooksDir, hooksJsonPath, "hooks.json info read");
+      const raw = await readFile(hooksJsonPath, "utf8");
+      const parsed = parseHooksForInfo(raw, cwd);
+      if (!parsed.ok) {
+        return { kind: "degraded", reason: "unparseable" };
+      }
+
+      // No `projectDroppedHookEntries` here: the materialized file IS the
+      // filtered supported subset the install ledger wrote, so its `dropped`
+      // list is empty by construction. The detail an unsupported handler would
+      // have carried was never persisted, and reconstructing it would be
+      // invention.
+      entries.push(...projectHookSummaryEntries(parsed.value));
+    } catch (err) {
+      // NFR-10: a containment refusal is NOT a disk hiccup, so it is named in
+      // the debug log before it collapses into the shared probe ladder. This
+      // mirrors the hooks hydrate read site, which logs the violation and
+      // returns rather than propagating.
+      //
+      // `derivePluginRootForInfo`'s sibling rule -- containment throws
+      // propagate unmasked -- deliberately does NOT apply here: this arm has no
+      // caller-side catch, so a rethrow would fail the entire read-only info
+      // block over one refused component kind. The rendered outcome stays the
+      // closed-set `{unreadable}` the catalog pins; only the diagnostic is new.
+      if (err instanceof PathContainmentError) {
+        hookDebugLog(`info: containment violation for hooks slug "${slug}": ${errorMessage(err)}`);
+      }
+
+      return { kind: "degraded", reason: narrowProbeError(err) };
+    }
+  }
+
+  return { kind: "listed", entries };
 }
 
 /**
@@ -658,10 +722,45 @@ async function composeResolvedComponents(
 }
 
 /**
+ * D-96-04: one built block plus the identity of the arm that built it.
+ *
+ * `skipReason` is reported by the producer rather than re-derived from the
+ * rendered row. The earlier inference read `status !== "failed" && reasons
+ * includes "not in manifest"`, which is exact only for as long as the
+ * state-only arm remains the sole producer of that pairing -- a future arm
+ * stamping the same reason on a non-failed row would silently acquire a
+ * `warning`-severity fetch-skip note on a read-only surface. A discriminator
+ * costs one field and cannot drift.
+ *
+ * D-100-08 / ENBL-17: the field carries the skip REASON rather than a
+ * state-only boolean, because two independent causes now reach the same block
+ * -- a record its manifest no longer declares, and a record the user disabled.
+ * One optional field is what makes "a scope contributes at most one skip row"
+ * structural: two per-cause lists could concatenate, one field cannot.
+ *
+ * When BOTH causes apply the producer reports `already disabled`. The two rows
+ * answer different questions: the fetch note answers why the FETCH did nothing,
+ * and disabled-ness is the proximate answer (a disabled scope is skipped
+ * whatever the manifest says, while manifest absence only skips a scope that
+ * was otherwise fetchable), whereas the inventory row answers what constrains
+ * the user next and keeps `not in manifest` per `D-100-07`.
+ */
+interface InfoBlock {
+  readonly block: PluginInfoMessage;
+  /**
+   * Why a `--fetch` fetched nothing for this block. ABSENT means the block is
+   * fetchable and the flag was honored.
+   */
+  readonly skipReason?: ContentReason;
+}
+
+/**
  * Build a `PluginInfoMessage` for ONE scope-record pair. Branches:
  *   (a) Manifest read failure -> `(failed) {<reason>}` row, reason
  *       classified via `narrowProbeError`.
- *   (b) Plugin name not in manifest -> `(failed) {not in manifest}`.
+ *   (b) Plugin name not in manifest -> installation record present:
+ *       `(installed)` / `(partially-installed)` row built from the
+ *       record; no record: `(failed) {not in manifest}`.
  *   (c) Installed -> `(installed)` row + (path source -> resolved
  *       components; other sources -> `components: not resolved`).
  *   (d) Available (resolveStrict installable) -> `(available)` row.
@@ -676,7 +775,7 @@ async function buildBlock(
   autoupdate: boolean,
   cwd: string,
   fetchCtx?: InfoFetchContext,
-): Promise<PluginInfoMessage> {
+): Promise<InfoBlock> {
   const marketplaceDetails = { autoupdate };
 
   // RSTA-06 / NFR-5: the per-scope locations feed `makePresenceProbe`'s
@@ -699,42 +798,52 @@ async function buildBlock(
   try {
     manifest = await loadMarketplaceManifest(mpRecord.manifestPath);
   } catch (err) {
-    return {
-      kind: "plugin-info",
-      marketplaceName: marketplace,
-      marketplaceScope: scope,
-      marketplaceDetails,
-      plugin: {
-        status: "failed",
-        name: pluginName,
-        reasons: [narrowProbeError(err)],
-        componentsResolved: true,
-        components: {},
-      },
-    };
+    return wrapBlock(marketplace, scope, marketplaceDetails, {
+      status: "failed",
+      name: pluginName,
+      reasons: [narrowProbeError(err)],
+      componentsResolved: true,
+      components: {},
+    });
   }
 
-  // (b) Plugin name not in manifest -> `(failed) {not in manifest}`.
-  // Same `componentsResolved: true` + empty components rationale as
-  // (a) above.
-  const entry = manifest.plugins.find((p) => p.name === pluginName);
-  if (entry === undefined) {
-    return {
-      kind: "plugin-info",
-      marketplaceName: marketplace,
-      marketplaceScope: scope,
-      marketplaceDetails,
-      plugin: {
-        status: "failed",
-        name: pluginName,
-        reasons: ["not in manifest"],
-        componentsResolved: true,
-        components: {},
-      },
-    };
-  }
-
+  // (b) Plugin name not in the LOADED manifest. INFO-09 / INFO-10: an
+  // installation record that outlived its manifest entry is still
+  // installed -- the absence is a reason on an installed row, not a
+  // verdict. Only a name in NEITHER the manifest NOR the installation
+  // records is a failure (BOUND-02); that arm keeps the
+  // `componentsResolved: true` + empty components rationale of (a).
+  //
+  // The record read is hoisted above the membership lookup so both
+  // branches can read it. Both MUST stay below arm (a): a manifest that
+  // could not be read licenses no membership claim, so no record may
+  // rescue that block (BOUND-01) -- which is why `lookupDeclaredPlugin`
+  // (D-99-02a) is reachable only on the successful-read path and answers
+  // `declared` or `absent`, never "unknown".
   const installed = mpRecord.plugins[pluginName];
+  const lookup = lookupDeclaredPlugin(manifest, pluginName);
+  if (lookup.kind === "absent") {
+    if (installed !== undefined) {
+      const stateOnlyRow = await buildStateOnlyInstalledRow(pluginName, installed, locations, cwd);
+      return wrapBlock(
+        marketplace,
+        scope,
+        marketplaceDetails,
+        applyDisabledRowShape(stateOnlyRow, installed),
+        skipReasonFor(installed, true),
+      );
+    }
+
+    return wrapBlock(marketplace, scope, marketplaceDetails, {
+      status: "failed",
+      name: pluginName,
+      reasons: ["not in manifest"],
+      componentsResolved: true,
+      components: {},
+    });
+  }
+
+  const entry = lookup.entry;
   const installedVersion = installed?.version;
   const manifestVersion = entry.version;
   const description = entry.description;
@@ -749,6 +858,14 @@ async function buildBlock(
 
   // (c) Installed bucket.
   if (installed !== undefined) {
+    // D-100-08 / ENBL-17: a disabled record has no materialized artifacts to
+    // refresh (ENBL-02), so the fetch is DECLINED here rather than run and then
+    // described as skipped. `skipReason` below and this gate are ONE decision:
+    // without the gate a disabled git-source record the manifest still declares
+    // would clone and fetch for real, then carry an `already disabled` note
+    // whose whole purpose is to say the fetch did nothing. The arm (b) sibling
+    // needs no gate -- `buildStateOnlyInstalledRow` cannot express a fetch.
+    const blockFetchCtx = isRecordedButDisabled(installed) ? undefined : fetchCtx;
     const row = await buildInstalledRow({
       pluginName,
       version: installedVersion ?? manifestVersion,
@@ -759,9 +876,15 @@ async function buildBlock(
       installedRecord: installed,
       parsedSource,
       locations,
-      ...(fetchCtx !== undefined && { fetchCtx }),
+      ...(blockFetchCtx !== undefined && { fetchCtx: blockFetchCtx }),
     });
-    return wrapBlock(marketplace, scope, marketplaceDetails, row);
+    return wrapBlock(
+      marketplace,
+      scope,
+      marketplaceDetails,
+      applyDisabledRowShape(row, installed),
+      skipReasonFor(installed, false),
+    );
   }
 
   // (d) / (e) Not installed -> resolve to classify remote / available /
@@ -780,19 +903,251 @@ async function buildBlock(
   return wrapBlock(marketplace, scope, marketplaceDetails, row);
 }
 
+/**
+ * D-96-04: the single `InfoBlock` constructor. `skipReason` defaults to absent
+ * so only the arms that CANNOT fetch have to say so, and a new arm cannot
+ * acquire a skip note by accident.
+ */
 function wrapBlock(
   marketplace: string,
   scope: Scope,
   marketplaceDetails: { readonly autoupdate: boolean },
   plugin: PluginInfoRow,
-): PluginInfoMessage {
+  skipReason?: ContentReason,
+): InfoBlock {
   return {
-    kind: "plugin-info",
-    marketplaceName: marketplace,
-    marketplaceScope: scope,
-    marketplaceDetails,
-    plugin,
+    block: {
+      kind: "plugin-info",
+      marketplaceName: marketplace,
+      marketplaceScope: scope,
+      marketplaceDetails,
+      plugin,
+    },
+    ...(skipReason !== undefined && { skipReason }),
   };
+}
+
+/**
+ * ENBL-16 / D-100-07: the reasons a disabled row may carry.
+ *
+ * Manifest absence plus the failure class, and nothing else. Both halves answer
+ * the same question -- what stops the user's next action -- because `enable`
+ * re-runs the install ledger against the marketplace entry and its source: a
+ * name the manifest no longer declares has nothing to resolve, and a source
+ * that cannot be read has nothing to materialize. The unsupported-kind tokens
+ * and the soft-dependency markers are excluded because they describe a runtime
+ * the disable suspended, and they return on their own once the plugin is
+ * enabled again.
+ *
+ * `unparseable` and `invalid manifest` are deliberately absent: both name a
+ * marketplace-manifest defect, and a block that could not read its manifest
+ * never reaches this shape (arm (a) returns first).
+ */
+const DISABLED_ROW_REASONS: ReadonlySet<ContentReason> = new Set<ContentReason>([
+  "not in manifest",
+  "source missing",
+  "unreadable",
+  "permission denied",
+  "network unreachable",
+  "authentication required",
+]);
+
+/**
+ * D-100-08 / ENBL-16 / ENBL-17: the disabled row's shape. Applied at every arm
+ * of `buildBlock` that can see an installation record, and read through the
+ * shared predicate so this site cannot drift from the single definition of
+ * disabled-ness.
+ *
+ * Two edits, one rule: report the durable facts that constrain what the user
+ * can do next, and hide the facts about runtime behavior that is currently
+ * suspended.
+ *
+ * The status wins over whatever the arm derived, because
+ * `derivePersistedInstalledStatus` answers a different question -- whether the
+ * install dropped components -- and can return nothing but `installed` or
+ * `partially-installed`, so an un-injected disabled record would tell the user
+ * a suspended plugin is running.
+ *
+ * The reason brace narrows to `DISABLED_ROW_REASONS` -- manifest absence and
+ * the failure class. `enable` re-runs the install ledger, which resolves the
+ * plugin from the marketplace manifest and reads its source, so both kinds of
+ * fact block the user's next action and both stay. A dropped component kind and
+ * a soft-dependency marker describe a runtime that is not running; they stay
+ * hidden until the plugin is re-enabled, at which point the enabled row reports
+ * them again.
+ *
+ * Parity with `list.ts::disabledReasonsField` holds for every input the list
+ * surface can express: that builder reads the record alone and runs no probe,
+ * so manifest absence is the only reason it ever HAS. This surface additionally
+ * reads disk, so it can name a read failure the list surface never learns
+ * about; suppressing it here would not buy agreement, it would only drop the
+ * one fact the extra read produced.
+ */
+function applyDisabledRowShape(
+  row: PluginInfoRow,
+  record: MarketplaceRecord["plugins"][string],
+): PluginInfoRow {
+  if (!isRecordedButDisabled(record)) {
+    return row;
+  }
+
+  return {
+    ...row,
+    status: "disabled",
+    reasons: (row.reasons ?? []).filter((reason) => DISABLED_ROW_REASONS.has(reason)),
+  };
+}
+
+/**
+ * D-100-08 / ENBL-17 / D-96-04: the producer's answer to "why would a `--fetch`
+ * do nothing here". `manifestAbsent` is the caller's arm, not a re-derivation:
+ * only the state-only arm has no manifest entry to fetch from. Disabled-ness
+ * wins when both hold -- see `InfoBlock`.
+ */
+function skipReasonFor(
+  record: MarketplaceRecord["plugins"][string],
+  manifestAbsent: boolean,
+): ContentReason | undefined {
+  if (isRecordedButDisabled(record)) {
+    return "already disabled";
+  }
+
+  return manifestAbsent ? "not in manifest" : undefined;
+}
+
+/**
+ * INFO-09 / INFO-10 / INFO-11 / D-96-01: describe an installation record whose
+ * marketplace manifest LOADED but no longer declares it. Every fact comes from
+ * the record: `version` (the schema declares it required, so there is nothing
+ * to fall back to), the `(installed)` / `(partially-installed)` split from the
+ * persisted `compatibility.unsupported`, and the component inventory from
+ * `resources.*`.
+ *
+ * No `description` and no `dependencies`: both are manifest-only metadata and
+ * are NOT reconstructed. `componentsResolved: true` is load-bearing -- `false`
+ * emits the external-source `components: not resolved` marker, which would
+ * deny components this arm actually knows.
+ *
+ * NFR-5 / INFO-12: the parameter list takes no `fetchCtx` and no manifest
+ * entry, and the body constructs no probe, so the arm is network-free by
+ * signature rather than by control flow. It calls neither git-source row
+ * builder, so neither `makeFetchProbe` call site is reachable from here: a
+ * signature that cannot express a fetch is a stronger guarantee than a branch
+ * that declines one, and adding a `fetchCtx` parameter would silently dissolve
+ * it. What keeps that true under change is the zero-call suite in
+ * `tests/orchestrators/plugin/info-manifest-absent.test.ts`, which injects the
+ * clone-cache and credential seams and pins every counter on both mocks at 0
+ * for a `--fetch` run -- an assertion that can fail, not a reading of the
+ * control flow.
+ */
+async function buildStateOnlyInstalledRow(
+  pluginName: string,
+  record: MarketplaceRecord["plugins"][string],
+  locations: ScopedLocations,
+  cwd: string,
+): Promise<PluginInfoRow> {
+  const { components, degraded } = await composeStateOnlyComponents(record, locations, cwd);
+  return {
+    status: derivePersistedInstalledStatus(record),
+    name: pluginName,
+    version: record.version,
+    // INFO-10 / D-96-03: absence FIRST, then the kind tokens, then the hooks
+    // read marker LAST. `composeReasons` joins in array order, and
+    // `narrowUnsupportedKinds` stays the sole producer of the kind tokens --
+    // this wraps its output rather than replacing it (the same ordering rule
+    // `list.ts::partiallyInstalledReasons` implements).
+    reasons: [
+      "not in manifest",
+      ...narrowUnsupportedKinds(record.compatibility.unsupported),
+      ...(degraded === undefined ? [] : [degraded]),
+    ],
+    componentsResolved: true,
+    components,
+  };
+}
+
+/**
+ * FSTAT-01 / D-66-01: the single persisted-record status derivation shared by
+ * the non-path installed row and the state-only row. Extracted so the two
+ * arms cannot drift (and so `sonarjs/no-identical-functions` has one copy to
+ * look at).
+ */
+function derivePersistedInstalledStatus(
+  record: MarketplaceRecord["plugins"][string],
+): "installed" | "partially-installed" {
+  return record.compatibility.unsupported.length > 0 ? "partially-installed" : "installed";
+}
+
+/**
+ * INFO-11 / D-96-01: the component inventory for the state-only arm, read from
+ * the four name-list `resources` arrays. The names render VERBATIM as the
+ * Pi-generated installed names (`<plugin>-<skill>`, `<plugin>:<command>`,
+ * `pi-claude-marketplace-<plugin>-<agent>`); MCP servers are the sole
+ * exception by data shape, holding their raw source keys. There is no
+ * reverse-mapping to the manifest-backed arm's source names -- the divergence
+ * is documented in the output catalog, not engineered away.
+ *
+ * Sorting reuses `discoverComponentNames`' comparator so the two surfaces
+ * order identically. Entries are copied, never de-duplicated: `resources.*` is
+ * the record of what was materialized, and hiding a duplicate would hide a
+ * real state defect.
+ *
+ * INFO-11 / D-96-03: the `hooks` kind is the one kind the record cannot supply
+ * on its own -- it holds a container slug, so the entries are read back from
+ * the materialized configuration. That read is the only disk access this arm
+ * makes, and its failure surfaces as the `degraded` reason the caller appends to
+ * the row rather than as a missing block the operator cannot see. The read
+ * returns a discriminated result, so "no container recorded", "container listed
+ * as empty" and "container unlistable" cannot be conflated here.
+ */
+async function composeStateOnlyComponents(
+  record: MarketplaceRecord["plugins"][string],
+  locations: ScopedLocations,
+  cwd: string,
+): Promise<{
+  readonly components: Extract<PluginInfoRow, { componentsResolved: true }>["components"];
+  readonly degraded?: ContentReason;
+}> {
+  const agents = sortComponentNames(record.resources.agents);
+  const commands = sortComponentNames(record.resources.prompts);
+  const mcp = sortComponentNames(record.resources.mcpServers);
+  const skills = sortComponentNames(record.resources.skills);
+  // D-100-03 / ENBL-12 read ladder: the record wins when it carries the key,
+  // the materialized file answers when it does not, and records self-heal on
+  // the next install, update, reinstall or enable (there is no backfill,
+  // D-100-09). A present-but-EMPTY key is a completed read of zero entries --
+  // it must reach the `listed` arm, not collapse to `none`.
+  //
+  // The record path composes no path and opens no file, so a present key
+  // strictly REDUCES the traversal surface of this row builder rather than
+  // adding to it; the `assertPathInside` chokepoint on the fallback path is
+  // unchanged and still runs before every read.
+  const hooksRead: StateOnlyHookRead =
+    record.hookEntries === undefined
+      ? await readStateOnlyHookEntries(record.resources.hooks, locations, cwd)
+      : { kind: "listed", entries: hookSummaryEntriesFromPersisted(record.hookEntries) };
+
+  return {
+    components: {
+      ...(agents.length > 0 && { agents }),
+      ...(commands.length > 0 && { commands }),
+      // A `listed` read with zero entries renders no `hooks:` line and adds no
+      // reason: the materialized configuration exists and genuinely declares
+      // nothing. That is a different fact from `none` (no container recorded)
+      // and from `degraded` (a container that could not be listed), and the
+      // discriminant is what keeps the three from collapsing into each other.
+      ...(hooksRead.kind === "listed" &&
+        hooksRead.entries.length > 0 && { hooks: hooksRead.entries }),
+      ...(mcp.length > 0 && { mcp }),
+      ...(skills.length > 0 && { skills }),
+    },
+    ...(hooksRead.kind === "degraded" && { degraded: hooksRead.reason }),
+  };
+}
+
+/** The `discoverComponentNames` ordering, applied to a persisted name list. */
+function sortComponentNames(names: readonly string[]): readonly string[] {
+  return [...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 }
 
 /**
@@ -961,8 +1316,7 @@ function buildNonPathInstalledRow(
   description: string | undefined,
   installedRecord: MarketplaceRecord["plugins"][string],
 ): PluginInfoRow {
-  const status =
-    installedRecord.compatibility.unsupported.length > 0 ? "partially-installed" : "installed";
+  const status = derivePersistedInstalledStatus(installedRecord);
   return {
     status,
     name: pluginName,
@@ -1721,79 +2075,137 @@ async function buildAvailableRow(opts: {
 }
 
 /**
- * D-54-01 / ENBL-04: list-arm cascade block for a recorded-but-disabled
- * plugin. The info surface conveys the disabled state via the SAME
- * `(disabled)` inventory token as the list surface (catalog
- * `disabled-inventory` state) -- list-arm marketplace header +
- * `PluginDisabledMessage` row -- rather than the `PluginInfoMessage`
- * standalone variant: a disabled plugin has no materialized artifacts
- * (ENBL-02), so the per-kind component/dependencies block would be
- * misleading.
+ * The list-arm `<autoupdate>` marker composition every cascade block on this
+ * surface shares: `details` is stamped ONLY when the flag is true, and
+ * `lastUpdatedAt` never rides this surface.
+ *
+ * The asymmetry is deliberate and belongs to `renderMpHeader`, not to the
+ * callers: the list arm omits the marker entirely when autoupdate is false,
+ * whereas the STANDALONE info header always spells one of `<autoupdate>` /
+ * `<no autoupdate>`. A `--fetch` run on a state-only record therefore prints a
+ * bare `● mp [user]` skip-note header beside the info block's
+ * `● mp [user] <no autoupdate>` for the same (marketplace, scope) pair. The
+ * marker still TRACKS the info block -- it is present in exactly the cases the
+ * info block reports autoupdate as on -- and the divergence is recorded in the
+ * output catalog's `state-only-fetch-skipped` state. Stamping
+ * `details: { autoupdate: false }` here would not change a byte; only a
+ * closed-set change to the list-arm header would.
  */
-function buildDisabledInventoryBlock(
-  marketplace: string,
-  pluginName: string,
-  scope: Scope,
-  installed: MarketplaceRecord["plugins"][string],
-  autoupdate: boolean,
-): MarketplaceRows<PluginInfoCascadeMsg> {
-  // Mirror the list surface's `<autoupdate>` marker composition (details is
-  // emitted ONLY when the flag is true; `lastUpdatedAt` never on this
-  // surface).
-  const detailsField: { readonly details?: { autoupdate: boolean } } = autoupdate
-    ? { details: { autoupdate: true } }
-    : {};
+function autoupdateDetails(autoupdate: boolean): {
+  readonly details?: { autoupdate: boolean };
+} {
+  return autoupdate ? { details: { autoupdate: true } } : {};
+}
+
+/**
+ * D-96-04: the `--fetch`-was-skipped note for ONE scope, carried on the list-arm
+ * cascade (marketplace header, `details` ONLY when autoupdate is true).
+ *
+ * `severity: "warning"` is load-bearing rather than decorative: the envelope
+ * MAX-reduces its rows, so omitting it routes the whole notification to `info`
+ * with no summary line and the note reads as an ordinary success. Warning is
+ * the tri-state reading of the outcome -- the user asked for a refreshed state
+ * and did not get one -- and matches `update`'s `(skipped) {not in manifest}`
+ * precedent.
+ *
+ * `reason` names WHY nothing was fetched, and differs by cause: `not in
+ * manifest` for a state-only record (no manifest entry, so no source to fetch
+ * from) and `already disabled` for a recorded-but-disabled record (no
+ * materialized artifacts to refresh -- ENBL-02). The producer picks it; see
+ * `InfoBlock.skipReason`.
+ */
+function buildFetchSkipBlock(args: {
+  readonly marketplace: string;
+  readonly scope: Scope;
+  readonly pluginName: string;
+  readonly version: string | undefined;
+  readonly reason: ContentReason;
+  readonly autoupdate: boolean;
+}): MarketplaceRows<PluginInfoCascadeMsg> {
   return {
-    name: marketplace,
-    scope,
-    ...detailsField,
+    name: args.marketplace,
+    scope: args.scope,
+    ...autoupdateDetails(args.autoupdate),
     plugins: [
       {
-        // D-03/D-06: a disabled INVENTORY row (info surface) is steady state,
-        // not a realized transition -> info, never reloads.
-        status: "disabled",
-        name: pluginName,
-        version: installed.version,
-        severity: "info",
-        needsReload: false,
+        status: "skipped",
+        name: args.pluginName,
+        reasons: [args.reason],
+        severity: "warning",
+        ...(args.version !== undefined && { version: args.version }),
       },
     ],
   };
 }
 
 /**
- * D-54-01 / ENBL-04: split the found (scope, record) tuples into the
- * disabled-inventory blocks (recorded-but-disabled marker present) and the
- * info-surface tuples that proceed through `buildBlock`. Extracted from
- * `getPluginInfo` to keep its cognitive complexity within the lint budget.
+ * One scope's worth of "nothing was fetched here", before it is rendered. Both
+ * skip arms produce this shape; only `reason` tells them apart.
  */
-function partitionDisabledScopes(
+interface SkipSource {
+  readonly scope: Scope;
+  readonly pluginName: string;
+  readonly version: string | undefined;
+  readonly reason: ContentReason;
+  readonly autoupdate: boolean;
+}
+
+/**
+ * D-96-04: report a `--fetch` no arm could carry out. A flag that renders
+ * identical bytes with and without it teaches the user it worked, so the
+ * request is accounted for out loud instead of being swallowed.
+ *
+ * BOTH non-fetchable causes are covered: a state-only record (no manifest entry
+ * to fetch from) and a recorded-but-disabled record (no materialized artifacts
+ * to refresh). Each names itself on the block through `skipReason`.
+ *
+ * IL-2: this is a SECOND notification beside the info block, because the
+ * standalone `PluginInfoRow` status set admits no `skipped`, so folding the
+ * note into the info block would mean dropping it. The info block keeps its own
+ * bytes and its own `info` severity.
+ *
+ * One notification carries one block per skipped scope, ordered by SCOPE so a
+ * mixed disabled + state-only run stays project-first (MSG-GR-3) rather than
+ * grouping by cause.
+ */
+function emitFetchSkip(
   opts: GetPluginInfoOptions,
-  found: readonly { scope: Scope; record: MarketplaceRecord; autoupdate: boolean }[],
-): {
-  disabledBlocks: MarketplaceRows<PluginInfoCascadeMsg>[];
-  infoFound: { scope: Scope; record: MarketplaceRecord; autoupdate: boolean }[];
-} {
-  const disabledBlocks: MarketplaceRows<PluginInfoCascadeMsg>[] = [];
-  const infoFound: { scope: Scope; record: MarketplaceRecord; autoupdate: boolean }[] = [];
-  for (const f of found) {
-    const installed = f.record.plugins[opts.plugin];
-    if (installed !== undefined && isRecordedButDisabled(installed)) {
-      disabledBlocks.push(
-        buildDisabledInventoryBlock(
-          opts.marketplace,
-          opts.plugin,
-          f.scope,
-          installed,
-          f.autoupdate,
-        ),
-      );
-    } else {
-      infoFound.push(f);
-    }
+  scopes: readonly Scope[],
+  built: readonly InfoBlock[],
+): void {
+  if (opts.fetch !== true) {
+    return;
   }
 
-  return { disabledBlocks, infoFound };
+  // D-100-08 / ENBL-17: ONE list, keyed by the producer's reason. The earlier
+  // form concatenated a per-cause list per arm, which emitted two rows for a
+  // scope that carried both causes; a single optional field per block cannot.
+  const sources: readonly SkipSource[] = built.flatMap(({ block, skipReason }) =>
+    skipReason === undefined
+      ? []
+      : [
+          {
+            scope: block.marketplaceScope,
+            pluginName: block.plugin.name,
+            version: block.plugin.version,
+            reason: skipReason,
+            autoupdate: block.marketplaceDetails.autoupdate,
+          },
+        ],
+  );
+
+  const skipBlocks = scopes.flatMap((s) =>
+    sources
+      .filter((src) => src.scope === s)
+      .map((src) => buildFetchSkipBlock({ marketplace: opts.marketplace, ...src })),
+  );
+  const [first, ...remaining] = skipBlocks;
+  if (first === undefined) {
+    return;
+  }
+
+  const rows: Plural<MarketplaceRows<PluginInfoCascadeMsg>> = [first, ...remaining];
+  notifyWithContext(opts.ctx, opts.pi, PLUGIN_INFO_CONTEXT, rows);
 }
 
 export async function getPluginInfo(opts: GetPluginInfoOptions): Promise<void> {
@@ -1846,27 +2258,20 @@ export async function getPluginInfo(opts: GetPluginInfoOptions): Promise<void> {
     return;
   }
 
-  // D-54-01 / ENBL-04: partition recorded-but-disabled scopes from the
-  // info-surface scopes BEFORE block building. A disabled record renders the
-  // list-arm `(disabled)` inventory cascade (see buildDisabledInventoryBlock)
-  // instead of the standalone `PluginInfoMessage` shape.
-  const { disabledBlocks, infoFound } = partitionDisabledScopes(opts, found);
-
-  // Every found scope holds the disabled marker: a single list-arm cascade
-  // (one block per scope) preserves IL-2 on this all-disabled path. OUT-07 /
-  // D-12: a per-scope bulk of disabled inventory rows -> `Plural<Row>`.
-  if (infoFound.length === 0) {
-    const rows: Plural<MarketplaceRows<PluginInfoCascadeMsg>> = disabledBlocks;
-    notifyWithContext(opts.ctx, opts.pi, PLUGIN_INFO_CONTEXT, rows);
-    return;
-  }
+  // D-100-08 / ENBL-17: every found scope goes to `buildBlock`, including a
+  // recorded-but-disabled one. A disabled record its manifest still declares
+  // resolves exactly as an uninstalled one does, and a disabled record the
+  // manifest dropped resolves from its own installation record -- so it reports
+  // its description and component inventory instead of a bare foreign-shaped
+  // row, while `applyDisabledRowShape` keeps the row saying `(disabled)` and
+  // holds its reason brace to at most `{not in manifest}`.
 
   // Destructure to make the branch choice unambiguous and avoid the
   // silent fall-through hazard `if (found.length === 1) / if (sole !==
   // undefined)` has under `noUncheckedIndexedAccess`.
-  const [sole, ...rest] = infoFound;
-  if (sole !== undefined && rest.length === 0 && disabledBlocks.length === 0) {
-    const block = await buildBlock(
+  const [sole, ...rest] = found;
+  if (sole !== undefined && rest.length === 0) {
+    const built = await buildBlock(
       opts.marketplace,
       opts.plugin,
       sole.scope,
@@ -1875,7 +2280,8 @@ export async function getPluginInfo(opts: GetPluginInfoOptions): Promise<void> {
       opts.cwd,
       fetchCtx,
     );
-    notify(opts.ctx, opts.pi, block);
+    notify(opts.ctx, opts.pi, built.block);
+    emitFetchSkip(opts, scopes, [built]);
     return;
   }
 
@@ -1894,8 +2300,8 @@ export async function getPluginInfo(opts: GetPluginInfoOptions): Promise<void> {
   // rule on the partial-failure path so a failure in one scope cannot hide
   // behind a healthy other-scope render; callers wanting strict IL-2 must pass
   // `--scope`. Block order follows the project-first scope iteration (MSG-GR-3).
-  const blocks = await Promise.all(
-    infoFound.map((f) =>
+  const built = await Promise.all(
+    found.map((f) =>
       buildBlock(
         opts.marketplace,
         opts.plugin,
@@ -1907,6 +2313,7 @@ export async function getPluginInfo(opts: GetPluginInfoOptions): Promise<void> {
       ),
     ),
   );
+  const blocks = built.map((b) => b.block);
   const infoBlocks = blocks.filter((b) => b.plugin.status !== "failed");
   const failedBlocks = blocks.filter((b) => b.plugin.status === "failed");
 
@@ -1923,15 +2330,12 @@ export async function getPluginInfo(opts: GetPluginInfoOptions): Promise<void> {
     });
   }
 
-  // D-54-01 / ENBL-04: surface the disabled-inventory scopes through the
-  // list-arm cascade. Mixed disabled+info renders break IL-2's single-notify
-  // rule the same way the GRAM-04 failure separation below does -- the two
-  // surfaces have incompatible message kinds, and hiding one behind the
-  // other would silently drop a scope's state.
-  if (disabledBlocks.length > 0) {
-    const rows: Plural<MarketplaceRows<PluginInfoCascadeMsg>> = disabledBlocks;
-    notifyWithContext(opts.ctx, opts.pi, PLUGIN_INFO_CONTEXT, rows);
-  }
+  // D-96-04: the skip note comes AFTER the inventory it annotates, matching the
+  // single-scope path's order. A `{already disabled}` row printed above the
+  // `(disabled)` row that establishes the state reads as a forward reference,
+  // and the same (inventory, note) pair must not render in two orders on two
+  // paths of one function.
+  emitFetchSkip(opts, scopes, built);
 
   // Surface each failed scope as its own `error`-severity notify (GRAM-04).
   for (const failure of failedBlocks) {

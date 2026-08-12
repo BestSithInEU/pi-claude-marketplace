@@ -113,16 +113,18 @@ interface SeedMarketplaceOpts {
   /** When provided BUT manifest is undefined, manifestPath in state points here (typically a nonexistent file for PL-6 tests). */
   manifestPathOverride?: string;
   /**
-   * Installed plugin records keyed by plugin name. `disabled: true` seeds
-   * the ENBL-02 empty-resources marker (recorded-but-disabled); the default
-   * seeds a populated `resources.skills` -- a PRODUCTION installed record
-   * always has at least one populated resources array (the resolver's
-   * `requireInstallable` gate rules out zero-component installables), and
-   * the empty-resources + installable:true intersection IS the load-bearing
-   * "currently disabled" marker (D-54-01 / ENBL-04). `hooksOnly: true`
-   * (D-63-04) seeds a hooks-only installed record (resources.hooks
-   * populated, every other axis empty) -- the exact shape that triggered
-   * the hooks-only-list-disabled regression.
+   * Installed plugin records keyed by plugin name. `disabled: true` sets the
+   * record's `enabled` field and NOTHING else: under ENBL-18 disable preserves
+   * every `resources.*` array, so a disabled record's inventory is whatever the
+   * caller supplies. The load-bearing "currently disabled" marker is the
+   * explicit `enabled: false` boolean alone (ENBL-05 /
+   * `persistence/state-io.ts::isRecordedButDisabled`); emptiness is no longer
+   * part of it. The default inventory seeds a populated `resources.skills` --
+   * a PRODUCTION installed record always has at least one populated array (the
+   * resolver's `requireInstallable` gate rules out zero-component
+   * installables). `hooksOnly: true` (D-63-04) seeds a hooks-only installed
+   * record (resources.hooks populated, every other axis empty) -- the exact
+   * shape that triggered the hooks-only-list-disabled regression.
    */
   installed?: Record<
     string,
@@ -137,6 +139,19 @@ interface SeedMarketplaceOpts {
        * signal the deriver reads, with `installable: false`).
        */
       unsupported?: readonly string[];
+      /**
+       * ENBL-15 / ENBL-18: per-kind override of the persisted `resources`
+       * arrays. Each omitted kind keeps its default; an explicitly empty array
+       * seeds a genuinely empty kind. This is the axis that makes a
+       * disabled-plus-populated record expressible, which is what ENBL-15 pins.
+       */
+      resources?: {
+        skills?: readonly string[];
+        prompts?: readonly string[];
+        agents?: readonly string[];
+        mcpServers?: readonly string[];
+        hooks?: readonly string[];
+      };
     }
   >;
   /** When provided, sets `autoupdate` on the marketplace record. */
@@ -186,25 +201,30 @@ async function seedMarketplace(opts: SeedMarketplaceOpts): Promise<void> {
 
   const plugins: Record<string, unknown> = {};
   for (const [name, info] of Object.entries(opts.installed ?? {})) {
-    // ENBL-04: empty resources + installable:true IS the disabled marker;
-    // an enabled installed record always has >= 1 populated array.
+    // ENBL-18: the inventory is INDEPENDENT of `disabled` -- disable preserves
+    // every array, so the same defaults apply to an enabled and a disabled
+    // record and the caller's `resources` override decides the rest.
     // D-63-04: hooksOnly seeds the resources.hooks axis populated while
     // every other axis is empty (the production shape of a hooks-only
     // installed plugin like learning-output-style).
-    let resources: {
+    const defaults =
+      info.hooksOnly === true
+        ? { skills: [], prompts: [], agents: [], mcpServers: [], hooks: [name] }
+        : { skills: [`${name}-skill`], prompts: [], agents: [], mcpServers: [], hooks: [] };
+    const override = info.resources;
+    const resources: {
       skills: string[];
       prompts: string[];
       agents: string[];
       mcpServers: string[];
       hooks: string[];
+    } = {
+      skills: [...(override?.skills ?? defaults.skills)],
+      prompts: [...(override?.prompts ?? defaults.prompts)],
+      agents: [...(override?.agents ?? defaults.agents)],
+      mcpServers: [...(override?.mcpServers ?? defaults.mcpServers)],
+      hooks: [...(override?.hooks ?? defaults.hooks)],
     };
-    if (info.disabled === true) {
-      resources = { skills: [], prompts: [], agents: [], mcpServers: [], hooks: [] };
-    } else if (info.hooksOnly === true) {
-      resources = { skills: [], prompts: [], agents: [], mcpServers: [], hooks: [name] };
-    } else {
-      resources = { skills: [`${name}-skill`], prompts: [], agents: [], mcpServers: [], hooks: [] };
-    }
 
     // FSTAT-01 / D-66-01: a recorded-installed plugin whose install-time
     // resolution dropped components persists `unsupported` (and
@@ -1055,6 +1075,146 @@ test("ENBL-04 / PL-1: --installed filter includes the disabled bucket (a disable
     assert.match(out, /◍ alpha v1\.0\.0 \(disabled\)/, out);
     assert.equal(out.includes("○ beta"), false, out);
   });
+});
+
+// ENBL-06: disabled-ness (`enabled`) and availability
+// (`compatibility.installable`) are orthogonal axes, so a record whose
+// install-time resolution dropped a component kind is still DISABLED once the
+// user disables it.
+//
+// ENBL-16: both records here are absent from the loaded manifest and both
+// dropped the same kind, so the braces separate the two reason SOURCES. The
+// disabled row names manifest absence alone -- its unsupported-kind tokens stay
+// suppressed, because a dropped component describes runtime behavior that is
+// suspended while the plugin is disabled. The enabled partial beside it keeps
+// `{not in manifest, lsp}`, which is what makes the two shapes distinguishable
+// inside one marketplace block.
+test("ENBL-06 / ENBL-16: a manifest-absent disabled PARTIAL renders `(disabled) {not in manifest}` beside an enabled partial's `(partially-installed) {not in manifest, lsp}`", async () => {
+  await withHermeticHome(async ({ home, cwd }) => {
+    const userRoot = path.join(home, ".pi", "agent");
+    await seedMarketplace({
+      scope: "user",
+      scopeRoot: userRoot,
+      cwd,
+      mpName: "mp1",
+      // The manifest LOADED and declares neither record, which is the only
+      // state that backs an absence claim (BOUND-03 / D-95-05).
+      manifest: { name: "mp1", plugins: [] },
+      // Both records carry the same dropped kind; only `disabled` differs.
+      installed: {
+        alpha: { version: "1.0.0", disabled: true, unsupported: ["lspServers"] },
+        beta: { version: "1.0.0", unsupported: ["lspServers"] },
+      },
+      installablePluginDirs: ["alpha", "beta"],
+    });
+
+    const { ctx, pi, notifications } = makeCtx();
+    await listPlugins({ ctx, pi, cwd, scope: "user" });
+
+    assert.equal(notifications.length, 1);
+    const out = notifications[0]!.message;
+    // The byte form IS the contract: one join proves both status tokens, the
+    // brace asymmetry, and the row order together. `alpha` staying first shows
+    // that reclassifying a record from partially-installed to disabled does not
+    // move its row -- order is state insertion order, not bucket order.
+    assert.equal(
+      out,
+      [
+        "● mp1 [user]",
+        "  ◍ alpha v1.0.0 (disabled) {not in manifest}",
+        "  ◉ beta v1.0.0 (partially-installed) {not in manifest, lsp}",
+      ].join("\n"),
+    );
+
+    // Row-scoped negatives so a regression names itself. A whole-output check
+    // for `lsp` would be defeated by beta's legitimate token. The disabled
+    // row's reason list holds AT MOST one member, so no ordering rule applies
+    // to it -- the join above is the whole assertion.
+    const alphaRow = out.split("\n").find((line) => line.includes("alpha")) ?? "";
+    assert.equal(alphaRow.includes("{lsp}"), false, alphaRow);
+    assert.equal(alphaRow.includes("lsp"), false, `no unsupported-kind token: ${alphaRow}`);
+    assert.equal(alphaRow.includes("(partially-installed)"), false, alphaRow);
+    assert.equal(notifications[0]!.severity, undefined, "disabled inventory routes to info");
+  });
+});
+
+// ENBL-15 / D-100-06: the disabled row renders byte-identically whatever the
+// retained inventory holds. `agents` and `mcpServers` are the two axes the
+// soft-dependency markers derive from, and ENBL-18 lets a disabled record keep
+// them populated, so this is the pair that could leak. The guarantee is
+// STRUCTURAL, not test-enforced: `PluginDisabledMessage` declares no
+// `dependencies` field and the render arm hard-codes both soft-dep arguments
+// false. `makeCtx` probes BOTH companions as UNLOADED, which is exactly the
+// condition under which a leak would render `{requires pi-subagents, requires
+// pi-mcp}` -- so a bare row here is evidence, not an accident of the harness.
+const DISABLED_BARE_ROW = ["● mp1 [user]", "  ◍ alpha v1.0.0 (disabled)"].join("\n");
+
+/**
+ * Render one disabled `alpha` whose retained inventory is the caller's, and
+ * report the message alongside the arrays that actually reached `state.json`.
+ * The recorded arrays are returned because a seeder that silently emptied them
+ * would make the byte assertion vacuous.
+ */
+async function renderDisabledWithInventory(inventory: {
+  agents: readonly string[];
+  mcpServers: readonly string[];
+}): Promise<{ out: string; recorded: { agents: string[]; mcpServers: string[] } }> {
+  return withHermeticHome(async ({ home, cwd }) => {
+    const userRoot = path.join(home, ".pi", "agent");
+    await seedMarketplace({
+      scope: "user",
+      scopeRoot: userRoot,
+      cwd,
+      mpName: "mp1",
+      manifest: {
+        name: "mp1",
+        plugins: [{ name: "alpha", source: "./alpha", version: "1.0.0" }],
+      },
+      installed: { alpha: { version: "1.0.0", disabled: true, resources: inventory } },
+      installablePluginDirs: ["alpha"],
+    });
+
+    const { ctx, pi, notifications } = makeCtx();
+    await listPlugins({ ctx, pi, cwd, scope: "user" });
+    assert.equal(notifications.length, 1);
+
+    const raw = await readFile(
+      path.join(locationsFor("user", cwd).extensionRoot, "state.json"),
+      "utf8",
+    );
+    const state = JSON.parse(raw) as {
+      marketplaces: Record<
+        string,
+        {
+          plugins: Record<string, { resources: { agents: string[]; mcpServers: string[] } }>;
+        }
+      >;
+    };
+    return {
+      out: notifications[0]!.message,
+      recorded: state.marketplaces.mp1!.plugins.alpha!.resources,
+    };
+  });
+}
+
+test("ENBL-15 / D-100-06: a disabled record with populated agents and mcpServers renders the same bytes as one with empty arrays", async () => {
+  const populated = await renderDisabledWithInventory({
+    agents: ["alpha-agent"],
+    mcpServers: ["alpha-mcp"],
+  });
+  const empty = await renderDisabledWithInventory({ agents: [], mcpServers: [] });
+
+  // The populated fixture must really be populated on disk.
+  assert.deepEqual(populated.recorded.agents, ["alpha-agent"]);
+  assert.deepEqual(populated.recorded.mcpServers, ["alpha-mcp"]);
+  assert.deepEqual(empty.recorded.agents, []);
+  assert.deepEqual(empty.recorded.mcpServers, []);
+
+  // ONE expected literal for both shapes: the two cases collide deliberately,
+  // so a divergence turns exactly one of these comparisons red.
+  assert.equal(populated.out, DISABLED_BARE_ROW);
+  assert.equal(empty.out, DISABLED_BARE_ROW);
+  assert.equal(populated.out.includes("{"), false, populated.out);
 });
 
 // D-63-04: hooks-only installed plugin must render `(installed)`, NOT

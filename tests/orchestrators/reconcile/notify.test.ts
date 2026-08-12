@@ -464,6 +464,197 @@ test("SEV-05: a partial backfill (installable:false) projects to a (partially-in
   assert.deepEqual(row.status === "partially-installed" ? [...row.reasons] : "absent", ["lsp"]);
 });
 
+test("WR-04: a backfill that orphaned a rewake names it on the promoted row, exactly as the install and enable arms do", () => {
+  const outcome: PerEntryOutcome = {
+    kind: "plugin-backfilled",
+    scope: "project",
+    marketplace: "mp",
+    plugin: "cr",
+    version: "1.0.0",
+    dependencies: [],
+    installable: true,
+    unsupported: [],
+    orphanRewake: true,
+  };
+  const msg = buildReconcileAppliedCascade([outcome]);
+  const row = msg.marketplaces[0]?.plugins[0];
+  assert.ok(row);
+  assert.equal(row.status, "installed");
+  assert.deepEqual(row.status === "installed" ? [...(row.reasons ?? [])] : "absent", [
+    "orphan rewake",
+  ]);
+  // The orphan token names a config bug; it moves no severity channel.
+  assert.equal(row.severity, "info");
+});
+
+test("WR-04: a backfill whose ledger degraded a component names the kind and raises the row to warning", () => {
+  const outcome: PerEntryOutcome = {
+    kind: "plugin-backfilled",
+    scope: "project",
+    marketplace: "mp",
+    plugin: "cr",
+    version: "1.0.0",
+    dependencies: [],
+    installable: false,
+    unsupported: ["lspServers"],
+    orphanRewake: true,
+    degradedKinds: ["skill"],
+  };
+  const msg = buildReconcileAppliedCascade([outcome]);
+  const row = msg.marketplaces[0]?.plugins[0];
+  assert.ok(row);
+  assert.equal(row.status, "partially-installed");
+  // install.ts's emit order: orphan rewake, then the malformed kinds, then the
+  // dropped kinds.
+  assert.deepEqual(row.status === "partially-installed" ? [...row.reasons] : "absent", [
+    "orphan rewake",
+    "malformed skill",
+    "lsp",
+  ]);
+  // WARN-01: a malformed component is a degrade THIS ledger produced, so it
+  // takes the raise the sibling arms take -- the still-degraded backfill alone
+  // stays info (SEV-03).
+  assert.equal(row.severity, "warning");
+});
+
+test("WR-04: a backfill reporting neither signal renders byte-identically to before", () => {
+  const clean: PerEntryOutcome = {
+    kind: "plugin-backfilled",
+    scope: "project",
+    marketplace: "mp",
+    plugin: "cr",
+    version: "1.0.0",
+    dependencies: ["agents"],
+    installable: true,
+    unsupported: [],
+  };
+  const row = buildReconcileAppliedCascade([clean]).marketplaces[0]?.plugins[0];
+  assert.ok(row);
+  assert.equal(row.status, "installed");
+  assert.equal(row.severity, "info");
+  assert.equal(Object.hasOwn(row, "reasons"), false, "no brace on a clean backfill");
+});
+
+test("ENBL-07: a reconcile enable that dropped component kinds projects to a (partially-installed) row with the dropped-kinds brace, severity info", () => {
+  // The load-time reconcile drives setPluginEnabled for every config-declared-
+  // enabled disabled record, and ENBL-07's widened gate re-materializes a
+  // soft-degraded record with kinds dropped. FSTAT-07 / D-66-04: the row follows
+  // the resolution, so it must NOT claim the clean (installed) token the very
+  // next `list` contradicts. SEV-03: the degradation predates the enable, so
+  // the row stays info -- parity with the sibling backfill partial arm.
+  const outcome: PerEntryOutcome = {
+    kind: "plugin-enabled",
+    scope: "project",
+    marketplace: "mp",
+    plugin: "cr",
+    version: "1.0.0",
+    unsupported: ["lspServers"],
+  };
+  const msg = buildReconcileAppliedCascade([outcome]);
+  const block = msg.marketplaces[0];
+  assert.ok(block);
+  assert.equal(block.plugins.length, 1);
+  const row = block.plugins[0];
+  assert.ok(row);
+  assert.equal(row.status, "partially-installed");
+  assert.equal(row.name, "cr");
+  assert.equal(row.severity, "info");
+  assert.equal(row.needsReload, true);
+  assert.deepEqual(row.status === "partially-installed" ? [...row.reasons] : "absent", ["lsp"]);
+});
+
+test("WARN-01 / D-86-03: a reconcile enable that degraded a skill's frontmatter projects (installed) {malformed skill} at warning severity", () => {
+  // The enable branch runs the SAME runInstallLedger over the SAME bridges as
+  // install, so a malformed-frontmatter degrade is reachable on a re-enable and
+  // must render exactly as it does on the plugin-installed arm: the (installed)
+  // token kept (a degraded component is NOT a dropped one), the per-kind token
+  // in the brace, and the info -> warning raise install.ts::successSeverity
+  // applies.
+  const outcome: PerEntryOutcome = {
+    kind: "plugin-enabled",
+    scope: "project",
+    marketplace: "mp",
+    plugin: "cr",
+    version: "1.0.0",
+    degradedKinds: ["skill"],
+  };
+  const msg = buildReconcileAppliedCascade([outcome]);
+  const row = msg.marketplaces[0]?.plugins[0];
+  assert.ok(row);
+  assert.equal(row.status, "installed");
+  assert.equal(row.severity, "warning");
+  assert.deepEqual(row.status === "installed" ? [...(row.reasons ?? [])] : "absent", [
+    "malformed skill",
+  ]);
+});
+
+test("SURF-05 / D-63-08: a reconcile enable of a plugin with an orphan rewake handler projects (installed) {orphan rewake} at info severity", () => {
+  // An orphan companion field is a config bug the ledger reports, not a
+  // shortfall in what was carried out -- so it names itself in the brace
+  // without moving the severity channel, exactly as on the install row.
+  const outcome: PerEntryOutcome = {
+    kind: "plugin-enabled",
+    scope: "project",
+    marketplace: "mp",
+    plugin: "cr",
+    version: "1.0.0",
+    orphanRewake: true,
+  };
+  const msg = buildReconcileAppliedCascade([outcome]);
+  const row = msg.marketplaces[0]?.plugins[0];
+  assert.ok(row);
+  assert.equal(row.status, "installed");
+  assert.equal(row.severity, "info");
+  assert.deepEqual(row.status === "installed" ? [...(row.reasons ?? [])] : "absent", [
+    "orphan rewake",
+  ]);
+});
+
+test("ENBL-07 / SURF-05 / WARN-01: all three enable degradation signals share one brace in install.ts's emit order", () => {
+  // Order is load-bearing: the brace must be byte-comparable with the install
+  // success row for the same ledger run -- orphan rewake, then the per-kind
+  // malformed tokens, then the dropped kinds.
+  const outcome: PerEntryOutcome = {
+    kind: "plugin-enabled",
+    scope: "project",
+    marketplace: "mp",
+    plugin: "cr",
+    version: "1.0.0",
+    unsupported: ["lspServers"],
+    orphanRewake: true,
+    degradedKinds: ["command", "skill"],
+  };
+  const msg = buildReconcileAppliedCascade([outcome]);
+  const row = msg.marketplaces[0]?.plugins[0];
+  assert.ok(row);
+  assert.equal(row.status, "partially-installed");
+  assert.equal(row.severity, "warning");
+  assert.deepEqual(row.status === "partially-installed" ? [...row.reasons] : "absent", [
+    "orphan rewake",
+    "malformed skill",
+    "malformed command",
+    "lsp",
+  ]);
+});
+
+test("ENBL-07: a clean reconcile enable (no dropped kinds) keeps the (installed) row, severity info -- byte-identical to before", () => {
+  const outcome: PerEntryOutcome = {
+    kind: "plugin-enabled",
+    scope: "project",
+    marketplace: "mp",
+    plugin: "cr",
+    version: "1.0.0",
+  };
+  const msg = buildReconcileAppliedCascade([outcome]);
+  const block = msg.marketplaces[0];
+  assert.ok(block);
+  const row = block.plugins[0];
+  assert.ok(row);
+  assert.equal(row.status, "installed");
+  assert.equal(row.severity, "info");
+  assert.equal(row.needsReload, true);
+});
+
 test("SEV-05: a backfill with no dropped kinds (degenerate empty set) renders a brace-less (partially-installed) row -- byte-identical to today", () => {
   // The no-dropped-kinds force-installed backfill renders brace-less: the shared
   // narrower returns [], so composeReasons emits no brace (D-69-04 -- rows
@@ -599,6 +790,156 @@ test("WARN-01 / NREG-01: a plugin-installed outcome with no degradedKinds is unc
     row.status === "installed" ? "reasons" in row && row.reasons !== undefined : "wrong-status",
     false,
   );
+});
+
+test("WR-06: a reconcile enable that staged an agent projects a row declaring the agents dependency", () => {
+  // The `{requires pi-subagents}` marker is a renderer concern driven by the
+  // row's `dependencies` list, so the projection's contract is that list: an
+  // empty one suppresses the marker no matter what the ledger staged. The
+  // sibling install arm has always carried it; this arm hard-coded [].
+  const outcome: PerEntryOutcome = {
+    kind: "plugin-enabled",
+    scope: "project",
+    marketplace: "mp",
+    plugin: "cr",
+    version: "1.0.0",
+    stagedAgents: true,
+  };
+  const msg = buildReconcileAppliedCascade([outcome]);
+  const row = msg.marketplaces[0]?.plugins[0];
+  assert.ok(row);
+  assert.equal(row.status, "installed");
+  assert.deepEqual(row.status === "installed" ? [...row.dependencies] : "absent", ["agents"]);
+});
+
+test("WR-06: the partially-installed enable arm carries the dependency list alongside the dropped-kind tokens", () => {
+  // Both arms of the composer derive from the same signals: a re-enable that
+  // dropped a kind AND staged an agent must not lose either fact. Reason order
+  // stays contractual -- orphan rewake, malformed kinds, then dropped kinds.
+  const outcome: PerEntryOutcome = {
+    kind: "plugin-enabled",
+    scope: "project",
+    marketplace: "mp",
+    plugin: "cr",
+    version: "1.0.0",
+    unsupported: ["lspServers"],
+    orphanRewake: true,
+    stagedAgents: true,
+    stagedMcpServers: true,
+  };
+  const msg = buildReconcileAppliedCascade([outcome]);
+  const row = msg.marketplaces[0]?.plugins[0];
+  assert.ok(row);
+  assert.equal(row.status, "partially-installed");
+  // `dependencies` is optional on the partially-installed row shape (the
+  // list/info inventory surface omits it), so read it through the same
+  // nullish fallback the row composer's consumers use.
+  assert.deepEqual(
+    row.status === "partially-installed" ? [...(row.dependencies ?? [])] : "absent",
+    ["agents", "mcp"],
+  );
+  assert.deepEqual(row.status === "partially-installed" ? [...row.reasons] : "absent", [
+    "orphan rewake",
+    "lsp",
+  ]);
+});
+
+test("WR-06 / NREG-01: an enable outcome that staged neither agents nor MCP servers keeps the empty dependency list", () => {
+  // The regression guard for the derivation: an unaffected enable projection
+  // must render byte-identically, which means no dependency and no marker.
+  const outcome: PerEntryOutcome = {
+    kind: "plugin-enabled",
+    scope: "project",
+    marketplace: "mp",
+    plugin: "cr",
+    version: "1.0.0",
+  };
+  const msg = buildReconcileAppliedCascade([outcome]);
+  const row = msg.marketplaces[0]?.plugins[0];
+  assert.ok(row);
+  assert.deepEqual(row, {
+    status: "installed",
+    name: "cr",
+    version: "1.0.0",
+    dependencies: [],
+    severity: "info",
+    needsReload: true,
+  });
+});
+
+test("IN-07: a plugin-installed outcome carrying orphanRewake renders (installed) {orphan rewake} at info severity", () => {
+  // D-98-01: the install arm and the enable arm run the SAME ledger over the
+  // SAME bridges, so a fresh reconcile install of a plugin whose hook handler
+  // declares a rewake message without `asyncRewake` must name the same fact the
+  // re-enable arm already names. An orphan companion field is a config bug the
+  // ledger reports, not a shortfall in what was carried out, so it rides the
+  // brace without moving the severity channel.
+  const outcome: PerEntryOutcome = {
+    kind: "plugin-installed",
+    scope: "project",
+    marketplace: "mp",
+    plugin: "cr",
+    dependencies: [],
+    orphanRewake: true,
+  };
+  const msg = buildReconcileAppliedCascade([outcome]);
+  const row = msg.marketplaces[0]?.plugins[0];
+  assert.ok(row);
+  assert.equal(row.status, "installed");
+  assert.equal(row.severity, "info");
+  assert.deepEqual(row.status === "installed" ? [...(row.reasons ?? [])] : "absent", [
+    "orphan rewake",
+  ]);
+});
+
+test("IN-07: an installed row carrying BOTH orphanRewake and a malformed kind emits {orphan rewake, malformed skill} in that order at warning severity", () => {
+  // Emit order is contractual: the orphan-rewake token precedes the per-kind
+  // malformed tokens, so the brace stays byte-comparable with the standalone
+  // install row and with the sibling enable projection. Severity is decided by
+  // the malformed rule alone -- the orphan token moves no severity channel.
+  const outcome: PerEntryOutcome = {
+    kind: "plugin-installed",
+    scope: "project",
+    marketplace: "mp",
+    plugin: "cr",
+    dependencies: [],
+    orphanRewake: true,
+    degradedKinds: ["skill"],
+  };
+  const msg = buildReconcileAppliedCascade([outcome]);
+  const row = msg.marketplaces[0]?.plugins[0];
+  assert.ok(row);
+  assert.equal(row.status, "installed");
+  assert.equal(row.severity, "warning");
+  assert.deepEqual(row.status === "installed" ? [...(row.reasons ?? [])] : "absent", [
+    "orphan rewake",
+    "malformed skill",
+  ]);
+});
+
+test("IN-07 / NREG-01: an install outcome carrying no degradation signal projects the row shape unchanged", () => {
+  // The whole row is pinned by value: a signal-free install must gain no
+  // `reasons` key at all (an empty brace would be a byte change), keep `info`,
+  // and keep every other field it carries today.
+  const outcome: PerEntryOutcome = {
+    kind: "plugin-installed",
+    scope: "project",
+    marketplace: "mp",
+    plugin: "cr",
+    version: "1.0.0",
+    dependencies: [],
+  };
+  const msg = buildReconcileAppliedCascade([outcome]);
+  const row = msg.marketplaces[0]?.plugins[0];
+  assert.ok(row);
+  assert.deepEqual(row, {
+    status: "installed",
+    name: "cr",
+    version: "1.0.0",
+    dependencies: [],
+    severity: "info",
+    needsReload: true,
+  });
 });
 
 test("dangling-reference mismatch (plugin attributed) -> child (failed) {dangling reference} plugin row (WR-03 / PURL-06)", () => {

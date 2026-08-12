@@ -15,12 +15,12 @@
 // (D-04 consume-time default -- the absent field includes, only an explicit
 // `false` excludes).
 //
-// ENBL-02: the recorded-but-disabled hand-off closes here.
-// `isRecordedButDisabled(record)` reads the explicit `enabled` field:
-// `record.compatibility.installable && !record.enabled`. An explicit
-// `enabled: false` (set by the disable orchestrator) is the sole
-// "currently disabled" marker; absence of the field after migration
-// is treated as enabled.
+// ENBL-02 / ENBL-05: the recorded-but-disabled hand-off closes here.
+// `isRecordedButDisabled(record)` (the single definition in
+// `persistence/state-io.ts`) reads the explicit `enabled` field and nothing
+// else. An explicit `enabled: false` -- written only by the disable
+// orchestrator -- is the sole "currently disabled" marker; absence of the
+// field after migration is treated as enabled.
 //
 // Plugin-key parser (D-01): flat-keyed plugin entries are parsed by
 // `lastIndexOf("@")` so a plugin name containing `@` (e.g.
@@ -47,6 +47,7 @@
 
 import { parsePluginSource, samePlannedSource, sourceLogical } from "../../domain/source.ts";
 import { isDeclaredEnabled } from "../../persistence/config-io.ts";
+import { isRecordedButDisabled } from "../../persistence/state-io.ts";
 
 import { emptyReconcilePlan } from "./types.ts";
 
@@ -251,31 +252,6 @@ interface DeclaredPluginAccumulator {
 }
 
 /**
- * ENBL-02 / A1 -- the empty-resources marker.
- *
- * A recorded plugin whose four `resources.{skills,prompts,agents,mcpServers}`
- * arrays are ALL empty AND whose `compatibility.installable === true` is
- * treated as currently disabled. The
- * `orchestrators/plugin/install.ts::statePhase` is the only path that
- * ENBL-02: the "currently disabled" marker is now an explicit
- * `enabled: false` on the plugin install record. The old empty-resources
- * heuristic (five-array emptiness + installable: true) is replaced by a
- * single boolean read, which is unambiguous for both classic-resource and
- * hooks-only plugins.
- *
- * The `installable === true` guard is preserved: a soft-degraded
- * (`installable: false`) plugin has `enabled: true` in state (it was
- * never explicitly disabled; the disable orchestrator is the only writer
- * of `enabled: false`), so `record.compatibility.installable && !record.enabled`
- * naturally excludes soft-degraded entries.
- */
-export function isRecordedButDisabled(
-  record: ExtensionState["marketplaces"][string]["plugins"][string],
-): boolean {
-  return record.compatibility.installable && !record.enabled;
-}
-
-/**
  * Classify a single declared plugin entry into install / enable / disable /
  * dangling buckets (or a steady-state no-op). Extracted out of `diffPlugins`
  * to keep the cognitive complexity of the iteration body low.
@@ -327,14 +303,17 @@ function classifyDeclaredPlugin(
 
   if (enabledExplicitFalse) {
     // WR-05 convergence: the terminal state of a successful disable is
-    // exactly "recorded with empty resources + config `enabled: false`"
-    // (ENBL-02 keeps the record). That steady state is NOT a config<->state
-    // divergence -- pushing a disable for it would render
-    // `(will disable)` forever and make the apply path re-run a
-    // no-op disable on every reload. Only a recorded record that is NOT
-    // already disabled (artifacts still materialised) needs the action --
-    // symmetric with the enable branch's "recorded + populated + enabled"
-    // steady state below.
+    // exactly "recorded with config `enabled: false`" (ENBL-02 keeps the
+    // record). ENBL-18 / D-100-10: disable changes `enabled` and `updatedAt`
+    // and nothing else -- `resources.*` and `hookEntries` are PRESERVED and are
+    // no part of the marker, which is why the guard below reads
+    // `isRecordedButDisabled` alone and must never re-acquire an inventory
+    // test. That steady state is NOT a config<->state divergence -- pushing a
+    // disable for it would render `(will disable)` forever and make the apply
+    // path re-run a no-op disable on every reload. Only a recorded record that
+    // is NOT already disabled (artifacts still materialised) needs the action --
+    // symmetric with the enable branch's "recorded + enabled" steady state
+    // below.
     const record = state.marketplaces[marketplace]?.plugins[plugin];
     if (recorded && record !== undefined && !isRecordedButDisabled(record)) {
       // Declared-disabled but still materialised: drop artifacts without
@@ -350,15 +329,17 @@ function classifyDeclaredPlugin(
     return;
   }
 
-  // Recorded + declared-enabled: split on the empty-resources marker
-  // (ENBL-02 / isRecordedButDisabled). The install branch above already
+  // Recorded + declared-enabled: split on the explicit `enabled: false`
+  // marker (ENBL-05 / isRecordedButDisabled). The install branch above already
   // returned for `!recorded`, so a plugin CAN'T land in both `install` and
   // `enable` in the same pass.
   const record = state.marketplaces[marketplace]?.plugins[plugin];
   if (record !== undefined && isRecordedButDisabled(record)) {
     acc.enable.push({ scope, plugin, marketplace });
   }
-  // Declared-enabled, recorded, populated: steady state, no action.
+  // Declared-enabled, recorded, not disabled: steady state, no action. The
+  // record's inventory is not consulted -- ENBL-18 keeps it populated across a
+  // disable, so it distinguishes nothing here.
 }
 
 /**

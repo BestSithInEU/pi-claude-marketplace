@@ -9,12 +9,14 @@ import {
   parsePluginSource,
   pathSource,
 } from "../../../extensions/pi-claude-marketplace/domain/source.ts";
+import { computeHashVersion } from "../../../extensions/pi-claude-marketplace/domain/version.ts";
 import {
   __test_outcomeToCascadePluginMessage,
   __test_snapshotAfterRefresh,
   updateAllMarketplaces,
   updateMarketplace,
 } from "../../../extensions/pi-claude-marketplace/orchestrators/marketplace/update.ts";
+import { updateSinglePlugin } from "../../../extensions/pi-claude-marketplace/orchestrators/plugin/update.ts";
 import { saveConfig } from "../../../extensions/pi-claude-marketplace/persistence/config-io.ts";
 import { locationsFor } from "../../../extensions/pi-claude-marketplace/persistence/locations.ts";
 import {
@@ -34,6 +36,7 @@ import type {
   PluginUpdateOutcome,
 } from "../../../extensions/pi-claude-marketplace/orchestrators/types.ts";
 import type { ExtensionState } from "../../../extensions/pi-claude-marketplace/persistence/state-io.ts";
+import type { Scope } from "../../../extensions/pi-claude-marketplace/shared/types.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 interface NotifyRecord {
@@ -187,6 +190,19 @@ function makePluginRecord(): ExtensionState["marketplaces"][string]["plugins"][s
     installedAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
   };
+}
+
+/**
+ * Read one installed plugin record straight off disk. Used to compare a record
+ * before and after an operation that must not write to it.
+ */
+async function readPluginRecord(
+  extensionRoot: string,
+  marketplace: string,
+  plugin: string,
+): Promise<ExtensionState["marketplaces"][string]["plugins"][string] | undefined> {
+  const state = await loadState(extensionRoot);
+  return state.marketplaces[marketplace]?.plugins[plugin];
 }
 
 test("CMC-10 + MU-1: bare form against empty scope succeeds with `(no marketplaces)` EmptyToken and NO reload hint", async () => {
@@ -658,28 +674,55 @@ test("WR-02: corrupt pre-existing manifest routes to (failed), never a silent no
 // as the catch-all (the path/github classification did not collapse).
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Seed a path-source marketplace pointing at an on-disk dir under the cwd. */
+/**
+ * Seed a path-source marketplace pointing at an on-disk dir under the cwd.
+ *
+ * `scope`, `autoupdate`, and `plugins` are optional and each default to the
+ * original behavior (project scope, no autoupdate entry, no installed plugins),
+ * so every caller that omits them seeds exactly what it seeded before.
+ */
 async function seedPathMarketplace(opts: {
   cwd: string;
   name: string;
   marketplaceRoot: string;
+  scope?: Scope;
+  autoupdate?: boolean;
+  plugins?: Record<string, ExtensionState["marketplaces"][string]["plugins"][string]>;
 }): Promise<void> {
-  const locations = locationsFor("project", opts.cwd);
+  const scope = opts.scope ?? "project";
+  const locations = locationsFor(scope, opts.cwd);
   await mkdir(locations.extensionRoot, { recursive: true });
   await saveState(locations.extensionRoot, {
     schemaVersion: 1,
     marketplaces: {
       [opts.name]: {
         name: opts.name,
-        scope: "project",
+        scope,
         source: pathSource(opts.marketplaceRoot),
         addedFromCwd: opts.cwd,
         manifestPath: path.join(opts.marketplaceRoot, ".claude-plugin", "marketplace.json"),
         marketplaceRoot: opts.marketplaceRoot,
-        plugins: {},
+        plugins: opts.plugins ?? {},
+        ...(opts.autoupdate !== undefined && { autoupdate: opts.autoupdate }),
       },
     },
   });
+
+  // SPLIT-01: autoupdate lives in claude-plugins.json, so the state-side flag
+  // above is not enough -- the orchestrators read it through
+  // loadMergedScopeConfig. Mirror the github helper's paired config write.
+  if (opts.autoupdate !== undefined) {
+    await saveConfig(
+      locations.configJsonPath,
+      {
+        schemaVersion: 1,
+        marketplaces: {
+          [opts.name]: { source: opts.marketplaceRoot, autoupdate: opts.autoupdate },
+        },
+      },
+      locations.scopeRoot,
+    );
+  }
 }
 
 test("ATTR-10: path-source MALFORMED-JSON manifest renders `(failed) {invalid manifest}`, never `{network unreachable}`", async () => {
@@ -829,8 +872,8 @@ test("MU-6 + MU-8: cascade runs ONLY when autoupdate=true; pluginUpdate called o
         name: plugin,
         fromVersion: "0.0.1",
         toVersion: "0.0.2",
-        stagedAgents: [],
-        stagedMcpServers: [],
+        stagedAgentNames: [],
+        stagedMcpServerNames: [],
         declaresAgents: false,
         declaresMcp: false,
       });
@@ -879,8 +922,8 @@ test("MU-6: cascade skipped when autoupdate=false (default)", async () => {
         name: "x",
         fromVersion: "0.0.1",
         toVersion: "0.0.2",
-        stagedAgents: [],
-        stagedMcpServers: [],
+        stagedAgentNames: [],
+        stagedMcpServerNames: [],
         declaresAgents: false,
         declaresMcp: false,
       });
@@ -897,6 +940,248 @@ test("MU-6: cascade skipped when autoupdate=false (default)", async () => {
     });
 
     assert.equal(pluginUpdateCalled, false);
+  });
+});
+
+// ─── LIFE-06 / D-98-13: the manifest-absent skip on the autoupdate cascade ────
+//
+// The skip has ONE origin -- the shared update preflight, which stamps
+// `partition: "skipped"` with `reasons: ["not in manifest"]` for an installed
+// record whose entry the refreshed manifest no longer lists. The cascade adds a
+// second half: `cascadeAutoupdates` passes the outcome through untouched (only a
+// THROW is caught and converted), and `outcomeToCascadePluginMessage` re-narrows
+// it via `narrowSkipReason`. That narrower would also reach `not in manifest`
+// from its permissive notes-substring fallback, so the case below pins the
+// carry-through explicitly: the reason must survive because the preflight set
+// it, not because the fallback guessed it.
+//
+// The cascade skip row carries NO version token -- the mapper's `skipped` arm
+// forwards name, scope, and reasons only.
+
+test("LIFE-06: cascade mapper carries a preflight `not in manifest` skip through, leaving the record untouched", async () => {
+  await withHermeticHome(async ({ cwd }) => {
+    const locations = locationsFor("project", cwd);
+    await seedGithubMarketplace({
+      cwd,
+      name: "auto-skip",
+      ref: "main",
+      autoupdate: true,
+      plugins: { hello: makePluginRecord() },
+    });
+
+    const before = await readPluginRecord(locations.extensionRoot, "auto-skip", "hello");
+    assert.ok(before !== undefined);
+
+    const { ctx, pi, notifications } = makeCtx();
+    const { gitOps } = makeMockGitOps({
+      remoteRefs: { "refs/remotes/origin/main": "abcdef0000000000000000000000000000000009" },
+    });
+    // The exact outcome shape the shared preflight produces for a record whose
+    // manifest entry is gone: the recorded version as `fromVersion`, and the
+    // reason ALREADY narrowed.
+    const pluginUpdate: PluginUpdateFn = (plugin) =>
+      Promise.resolve<PluginUpdateOutcome>({
+        partition: "skipped",
+        name: plugin,
+        fromVersion: "0.0.1",
+        notes: ["not in manifest"],
+        reasons: ["not in manifest"],
+        declaresAgents: false,
+        declaresMcp: false,
+      });
+
+    await updateMarketplace({
+      ctx,
+      pi,
+      name: "auto-skip",
+      scope: "project",
+      cwd,
+      gitOps,
+      pluginUpdate,
+    });
+
+    const first = notifications[0];
+    assert.ok(first !== undefined);
+    assert.match(first.message, /^ {2}⊘ hello \(skipped\) \{not in manifest\}$/m);
+
+    // A skipped plugin is a fixed point for the cascade: nothing is written, so
+    // a repeated `marketplace update` finds the same record.
+    assert.deepEqual(await readPluginRecord(locations.extensionRoot, "auto-skip", "hello"), before);
+  });
+});
+
+test("LIFE-06: autoupdate cascade through the REAL single-plugin update renders `(skipped) {not in manifest}`", async () => {
+  // Deliberately USER scope. `updateSinglePlugin` takes no cwd -- it reads
+  // `process.cwd()` itself -- and `locationsFor("project", cwd)` composes
+  // `<cwd>/.pi`, so a project-scope fixture under a temporary directory would
+  // never be found by the real function. User-scope locations ignore the working
+  // directory entirely and derive from the agent dir, which the hermetic home
+  // controls. Do NOT "simplify" this back to project scope by changing the
+  // process working directory: that setting is process-global and corrupts
+  // sibling cases when a file's tests run concurrently.
+  await withHermeticHome(async ({ cwd }) => {
+    const locations = locationsFor("user", cwd);
+    const marketplaceRoot = await mkdtemp(path.join(tmpdir(), "mp-e2e-skip-"));
+    try {
+      const manifestPath = path.join(marketplaceRoot, ".claude-plugin", "marketplace.json");
+      const pluginRoot = path.join(marketplaceRoot, "plugins", "hello");
+      await mkdir(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
+      await writeFile(
+        path.join(pluginRoot, ".claude-plugin", "plugin.json"),
+        JSON.stringify({ name: "hello", version: "0.0.1" }),
+      );
+      // The manifest DECLARES the entry at install time...
+      await mkdir(path.join(marketplaceRoot, ".claude-plugin"), { recursive: true });
+      await writeFile(
+        manifestPath,
+        JSON.stringify({
+          name: "e2e-mp",
+          plugins: [{ name: "hello", source: "./plugins/hello", version: "0.0.1" }],
+        }),
+      );
+
+      await seedPathMarketplace({
+        cwd,
+        name: "e2e-mp",
+        marketplaceRoot,
+        scope: "user",
+        autoupdate: true,
+        plugins: { hello: makePluginRecord() },
+      });
+
+      // ...and the marketplace drops it afterwards.
+      await writeFile(manifestPath, JSON.stringify({ name: "e2e-mp", plugins: [] }));
+
+      const before = await readPluginRecord(locations.extensionRoot, "e2e-mp", "hello");
+      assert.ok(before !== undefined);
+
+      const { ctx, pi, notifications } = makeCtx();
+      const { gitOps } = makeMockGitOps();
+      await updateMarketplace({
+        ctx,
+        pi,
+        name: "e2e-mp",
+        scope: "user",
+        cwd,
+        gitOps,
+        // The REAL implementation, so the skip travels its whole route: the
+        // shared preflight originates it and the cascade mapper re-narrows it.
+        pluginUpdate: updateSinglePlugin,
+      });
+
+      const first = notifications[0];
+      assert.ok(first !== undefined);
+      assert.match(first.message, /^ {2}⊘ hello \(skipped\) \{not in manifest\}$/m);
+
+      assert.deepEqual(await readPluginRecord(locations.extensionRoot, "e2e-mp", "hello"), before);
+    } finally {
+      await rm(marketplaceRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── WR-10: a disabled-record re-pin leaves the autoupdate no-op gate ─────────
+//
+// The gate collapses an autoupdate-ON cascade to the bare
+// `(skipped) {up-to-date}` marketplace row when BOTH the validated
+// marketplace.json content is unchanged AND every cascaded plugin outcome is
+// `unchanged`. `unchanged` means the resolved version matched the record
+// exactly and NOTHING was written.
+//
+// A disabled record whose pin moved is not that: the update rewrites the
+// record's version, source, sha and compatibility block and then declines to
+// re-materialize artifacts, reporting `skipped` + `already disabled` (WR-02).
+// So the cascade is not a no-op, the gate does not fire, and the marketplace
+// renders `(updated)` with the per-plugin row underneath -- which is the fact.
+// Collapsing this to `{up-to-date}` would restate at the marketplace level the
+// exact falsehood WR-02 removed from the plugin row.
+//
+// The scenario is reachable only because the hash-version ladder is
+// CONTENT-derived: the plugin's files move while marketplace.json stays
+// byte-identical, so `snapshot.changed` is false and the plugin pin still moves.
+//
+// Deliberately USER scope, for the reason the sibling case above states at
+// length: `updateSinglePlugin` reads the process working directory itself.
+test("WR-10: an autoupdate cascade over a disabled record whose pin moved renders rows, not the no-op collapse", async () => {
+  await withHermeticHome(async ({ cwd }) => {
+    const locations = locationsFor("user", cwd);
+    const marketplaceRoot = await mkdtemp(path.join(tmpdir(), "mp-disabled-repin-"));
+    try {
+      const manifestPath = path.join(marketplaceRoot, ".claude-plugin", "marketplace.json");
+      const pluginRoot = path.join(marketplaceRoot, "plugins", "hello");
+      await mkdir(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
+      // NEITHER plugin.json NOR the manifest entry declares a version, so the
+      // PI-7 content hash is the resolved version (tier 3) and editing a file
+      // under the plugin root moves the pin.
+      await writeFile(
+        path.join(pluginRoot, ".claude-plugin", "plugin.json"),
+        JSON.stringify({ name: "hello" }),
+      );
+      await mkdir(path.join(pluginRoot, "skills", "tool"), { recursive: true });
+      await writeFile(
+        path.join(pluginRoot, "skills", "tool", "SKILL.md"),
+        "---\nname: tool\ndescription: A tool.\n---\n\n# Tool\n\nBefore.\n",
+      );
+      await mkdir(path.join(marketplaceRoot, ".claude-plugin"), { recursive: true });
+      await writeFile(
+        manifestPath,
+        JSON.stringify({
+          name: "disabled-mp",
+          plugins: [{ name: "hello", source: "./plugins/hello" }],
+        }),
+      );
+
+      // The record is pinned at the plugin's CURRENT content hash and disabled.
+      const pinnedVersion = await computeHashVersion(pluginRoot);
+      await seedPathMarketplace({
+        cwd,
+        name: "disabled-mp",
+        marketplaceRoot,
+        scope: "user",
+        autoupdate: true,
+        plugins: {
+          hello: { ...makePluginRecord(), version: pinnedVersion, enabled: false },
+        },
+      });
+
+      // Move the plugin CONTENT. marketplace.json is not touched, so the
+      // marketplace-level change detector reports no change.
+      await writeFile(
+        path.join(pluginRoot, "skills", "tool", "SKILL.md"),
+        "---\nname: tool\ndescription: A tool.\n---\n\n# Tool\n\nAfter.\n",
+      );
+
+      const { ctx, pi, notifications } = makeCtx();
+      const { gitOps } = makeMockGitOps();
+      await updateMarketplace({
+        ctx,
+        pi,
+        name: "disabled-mp",
+        scope: "user",
+        cwd,
+        gitOps,
+        pluginUpdate: updateSinglePlugin,
+      });
+
+      const first = notifications[0];
+      assert.ok(first !== undefined);
+      // The byte form, pinned whole: the no-op collapse would have rendered one
+      // line (`● disabled-mp [user] (skipped) {up-to-date}`) and no rows.
+      assert.equal(
+        first.message,
+        ["● disabled-mp [user] (updated)", "  ⊘ hello (skipped) {already disabled}"].join("\n"),
+      );
+      // Benign idempotent skip -> info, so no severity arg and no summary line.
+      assert.equal(first.severity, undefined);
+
+      // And the re-pin the row declines to call `up-to-date` really happened.
+      const after = await readPluginRecord(locations.extensionRoot, "disabled-mp", "hello");
+      assert.ok(after !== undefined);
+      assert.notEqual(after.version, pinnedVersion);
+      assert.equal(after.enabled, false);
+    } finally {
+      await rm(marketplaceRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -932,8 +1217,8 @@ test("CMC-26 / MSG-GR-3: cascade body emits per-plugin rows sorted alphabeticall
           name: plugin,
           fromVersion: "0.0.1",
           toVersion: "0.0.2",
-          stagedAgents: [],
-          stagedMcpServers: [],
+          stagedAgentNames: [],
+          stagedMcpServerNames: [],
           declaresAgents: false,
           declaresMcp: false,
         });
@@ -1031,8 +1316,8 @@ test("MU-9 + MSG-RH-1: success emits canonical reload hint trailer for updated p
         name: plugin,
         fromVersion: "0.0.1",
         toVersion: "0.0.2",
-        stagedAgents: [],
-        stagedMcpServers: [],
+        stagedAgentNames: [],
+        stagedMcpServerNames: [],
         declaresAgents: false,
         declaresMcp: false,
       });
@@ -1127,8 +1412,8 @@ test("UXG-05 (UAT Test-3 gap) regression guard: autoupdate-ON cascade where a pl
         name: plugin,
         fromVersion: "0.0.1",
         toVersion: "0.0.2",
-        stagedAgents: [],
-        stagedMcpServers: [],
+        stagedAgentNames: [],
+        stagedMcpServerNames: [],
         declaresAgents: false,
         declaresMcp: false,
       });
@@ -1252,8 +1537,8 @@ test("outcomeToCascadePluginMessage: updated outcome -> PluginUpdatedMessage wit
     name: "p",
     fromVersion: "0.5.0",
     toVersion: "1.0.0",
-    stagedAgents: [],
-    stagedMcpServers: [],
+    stagedAgentNames: [],
+    stagedMcpServerNames: [],
     declaresAgents: true,
     declaresMcp: false,
   };
@@ -1282,8 +1567,8 @@ test("SEV-03 / D-69-01: updated outcome carrying unsupportedKinds -> PluginParti
     name: "degraded-plugin",
     fromVersion: "0.9.0",
     toVersion: "1.0.0",
-    stagedAgents: [],
-    stagedMcpServers: [],
+    stagedAgentNames: [],
+    stagedMcpServerNames: [],
     declaresAgents: false,
     declaresMcp: false,
     partialDegrade: { kinds: ["lspServers"], newlyDegraded: false },
@@ -1312,8 +1597,8 @@ test("SEV-03 / D-69-01: a NEWLY-degraded force outcome (newlyDegraded=true) stam
     name: "degraded-plugin",
     fromVersion: "0.9.0",
     toVersion: "1.0.0",
-    stagedAgents: [],
-    stagedMcpServers: [],
+    stagedAgentNames: [],
+    stagedMcpServerNames: [],
     declaresAgents: false,
     declaresMcp: false,
     partialDegrade: { kinds: ["lspServers"], newlyDegraded: true },
@@ -1331,8 +1616,8 @@ test("SEV-03 / D-69-01: an ALREADY-degraded force outcome (newlyDegraded=false) 
     name: "degraded-plugin",
     fromVersion: "0.9.0",
     toVersion: "1.0.0",
-    stagedAgents: [],
-    stagedMcpServers: [],
+    stagedAgentNames: [],
+    stagedMcpServerNames: [],
     declaresAgents: false,
     declaresMcp: false,
     partialDegrade: { kinds: ["lspServers"], newlyDegraded: false },
@@ -1343,14 +1628,43 @@ test("SEV-03 / D-69-01: an ALREADY-degraded force outcome (newlyDegraded=false) 
   assert.equal(msg.severity, "info");
 });
 
+test("CR-01: an autoupdate outcome that drops a kind AND degrades a component names both axes and raises", () => {
+  // The autoupdate cascade reaches the dropped-kind row with NO user flag
+  // (`updateSinglePlugin` sets `partial: true` unconditionally), so this is the
+  // path where a swallowed malformed axis is least visible. `newlyDegraded` is
+  // false, which pins the SEV-03 base severity at info -- a warning here can
+  // only have come from the malformed axis, not from the drop.
+  const outcome: PluginUpdateOutcome = {
+    partition: "updated",
+    name: "degraded-plugin",
+    fromVersion: "0.9.0",
+    toVersion: "1.0.0",
+    stagedAgentNames: [],
+    stagedMcpServerNames: [],
+    declaresAgents: false,
+    declaresMcp: false,
+    degradedKinds: ["skill"],
+    partialDegrade: { kinds: ["lspServers"], newlyDegraded: false },
+  };
+  const msg = __test_outcomeToCascadePluginMessage(outcome, "user");
+  assert.equal(msg.status, "partially-installed");
+  if (msg.status !== "partially-installed") {
+    throw new Error("unreachable: narrowed above");
+  }
+
+  // Emit order is the install row's: malformed kinds first, then dropped kinds.
+  assert.deepEqual(msg.reasons, ["malformed skill", "lsp"]);
+  assert.equal(msg.severity, "warning");
+});
+
 test("SEV-03: a clean updated outcome (no unsupportedKinds) still renders (updated), not force-installed", () => {
   const outcome: PluginUpdateOutcome = {
     partition: "updated",
     name: "clean-plugin",
     fromVersion: "0.9.0",
     toVersion: "1.0.0",
-    stagedAgents: [],
-    stagedMcpServers: [],
+    stagedAgentNames: [],
+    stagedMcpServerNames: [],
     declaresAgents: false,
     declaresMcp: false,
   };
@@ -1384,8 +1698,8 @@ test("SEV-03 / D-69-01: the autoupdate cascade RENDERS a force-installed child r
         name: plugin,
         fromVersion: "0.0.1",
         toVersion: "0.0.2",
-        stagedAgents: [],
-        stagedMcpServers: [],
+        stagedAgentNames: [],
+        stagedMcpServerNames: [],
         declaresAgents: false,
         declaresMcp: false,
         partialDegrade: { kinds: ["lspServers"], newlyDegraded: true },
@@ -2053,5 +2367,65 @@ test("AUTH-02 update: the GitAuthBundle is forwarded by reference into refreshGi
     // proves no re-bundling occurred.
     assert.strictEqual(state.fetchCalls[0]?.auth?.credentialOps, credentialOps);
     assert.equal(typeof state.fetchCalls[0]?.auth?.onAuthRequired, "function");
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// WARN-01 / WR-12 / D-99-03: the autoupdate cascade's `(updated)` row
+// ──────────────────────────────────────────────────────────────────────────
+
+test("WR-12: the autoupdate cascade row is byte-identical to the standalone update row for the same degraded outcome", async () => {
+  // The update verb has TWO surfaces that render an `(updated)` row -- this
+  // autoupdate cascade and the manual update cascade -- and they read the same
+  // outcome. One naming the degrade while the other renders a bare success row
+  // is exactly the drift the single composer exists to prevent, so the surfaces
+  // are pinned against each other rather than each against its own literal.
+  await withHermeticHome(async ({ cwd }) => {
+    await seedGithubMarketplace({
+      cwd,
+      name: "mp",
+      ref: "main",
+      autoupdate: true,
+      plugins: { hello: makePluginRecord() },
+    });
+    const { ctx, pi, notifications } = makeCtx();
+    const { gitOps } = makeMockGitOps({
+      remoteRefs: { "refs/remotes/origin/main": "abcdef0000000000000000000000000000000031" },
+    });
+    const pluginUpdate: PluginUpdateFn = async (plugin) =>
+      Promise.resolve({
+        partition: "updated",
+        name: plugin,
+        fromVersion: "1.0.0",
+        toVersion: "1.0.1",
+        stagedAgentNames: [],
+        stagedMcpServerNames: [],
+        declaresAgents: false,
+        declaresMcp: false,
+        degradedKinds: ["skill"],
+      });
+
+    await updateMarketplace({
+      ctx,
+      pi,
+      name: "mp",
+      scope: "project",
+      cwd,
+      gitOps,
+      pluginUpdate,
+    });
+
+    const first = notifications[0];
+    assert.ok(first !== undefined);
+    // Byte-identical to the row `tests/orchestrators/plugin/update.test.ts`
+    // pins for the standalone verb, down to the two-space cascade indent.
+    assert.ok(
+      first.message.includes("  ● hello v1.0.0 → v1.0.1 (updated) {malformed skill}"),
+      `expected the standalone row bytes, got: ${first.message}`,
+    );
+    // WARN-01: the malformed raise is a SEPARATE axis from the WR-01
+    // companion-absence suppression this surface applies, so it fires here even
+    // though an absent companion deliberately does not.
+    assert.equal(first.severity, "warning");
   });
 });

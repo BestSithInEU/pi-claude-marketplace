@@ -20,7 +20,7 @@ import { computeHashVersion } from "../../domain/version.ts";
 import { loadConfig } from "../../persistence/config-io.ts";
 import { writePluginConfigEntry } from "../../persistence/config-write-back.ts";
 import { locationsFor } from "../../persistence/locations.ts";
-import { loadState } from "../../persistence/state-io.ts";
+import { isRecordedButDisabled, loadState } from "../../persistence/state-io.ts";
 import { CrossPluginConflictError } from "../../shared/errors.ts";
 
 import type { PluginEntry } from "../../domain/components/plugin.ts";
@@ -28,7 +28,99 @@ import type { MaterializablePlugin } from "../../domain/resolver.ts";
 import type { ScopeConfig } from "../../persistence/config-io.ts";
 import type { ScopedLocations } from "../../persistence/locations.ts";
 import type { ExtensionState } from "../../persistence/state-io.ts";
+import type { Dependency } from "../../shared/concerns/soft-dep.ts";
+import type { DegradeKind } from "../../shared/notify-reasons.ts";
 import type { Scope } from "../../shared/types.ts";
+
+/**
+ * The degradation signals ONE `runInstallLedger` run produces, carried together
+ * on every success outcome of every verb that drives that ledger -- `install`
+ * and the enable branch alike. Both verbs run the SAME ledger over the SAME
+ * bridges, so a signal one row names and the other omits is a row that
+ * contradicts its own ledger.
+ *
+ * The shape lives here, in the module `install.ts` and `enable-disable.ts` BOTH
+ * already import, rather than in either of them: `enable-disable.ts` imports
+ * `runInstallLedger` from `install.ts`, so declaring it there and importing it
+ * back would close a module cycle (IN-07 / D-98-01).
+ *
+ * Consumed by `freshEnableRow` (standalone enable), `enabledRowFromOutcome` and
+ * `installedRowFromOutcome` (reconcile projections), and the standalone install
+ * row -- the row composers must agree, so they read ONE shape rather than
+ * hand-synchronized field lists. Every field is optional and omitted when
+ * empty, so an unaffected outcome renders byte-identically (NREG-01).
+ */
+export interface LedgerDegradationSignals {
+  /**
+   * ENBL-07 / FSTAT-07 / D-66-04: the LIVE dropped-component kinds when the run
+   * went through the partial gate (the resolver's `partially-available` arm).
+   * Non-empty selects the `(partially-installed)` row over `(installed)`, so
+   * the row agrees with the record the ledger just wrote -- and therefore with
+   * the `list` / `info` row rendered next.
+   */
+  readonly unsupported?: readonly string[];
+  /**
+   * SURF-05 / D-63-08: a hook handler declared `rewakeMessage` /
+   * `rewakeSummary` without `asyncRewake: true`. One `{orphan rewake}` token
+   * per plugin regardless of N orphan handlers, on whichever verb materialized
+   * it. Names itself in the brace without moving the severity channel.
+   */
+  readonly orphanRewake?: boolean;
+  /**
+   * WARN-01 / D-86-03: the component kinds whose source frontmatter could not
+   * be parsed and installed in degraded form. Each kind contributes one
+   * `{malformed skill}` / `{malformed command}` token AND raises the row from
+   * `info` to `warning` -- the same raise `install.ts::successSeverity`
+   * applies, because a degraded component is carried out but short of ideal
+   * whichever verb materialized it.
+   */
+  readonly degradedKinds?: readonly DegradeKind[];
+  /**
+   * SEV-01 / D-98-02: the ledger staged at least one agent, so the row DECLARES
+   * the `pi-subagents` companion. Drives the `{requires pi-subagents}` marker
+   * and, when that companion is unloaded, the info -> warning raise. Carries a
+   * COUNT verdict only -- the staged agent names never reach a rendered row.
+   */
+  readonly stagedAgents?: boolean;
+  /**
+   * SEV-01 / D-98-02: the ledger staged at least one MCP server, so the row
+   * DECLARES the `pi-mcp-adapter` companion. The MCP counterpart of
+   * `stagedAgents`, driving the `{requires pi-mcp}` marker and the same raise.
+   */
+  readonly stagedMcpServers?: boolean;
+}
+
+/**
+ * SEV-01 / D-98-02: derive the closed-set `Dependency[]` an enable row declares
+ * from the ledger's staged-count signals -- the same derivation `install.ts`
+ * runs off `installCtx.stagedAgentNames` / `stagedMcpServerNames` for the same
+ * ledger run. Shared by the standalone enable row and the reconcile enable
+ * projection so the two row composers cannot drift.
+ *
+ * WR-01: both picked members are OPTIONAL, so every shape that inherits
+ * `LedgerDegradationSignals` matched this parameter structurally -- including
+ * `PluginUpdateUpdatedOutcome`, which spells the same facts as `declaresAgents`
+ * / `declaresMcp` and would therefore have compiled here and returned `[]` for
+ * every update. The `partition?: never` refusal excludes the outcome shapes
+ * discriminated by that field (the update / reinstall partitions) while leaving
+ * the two `kind`-discriminated enable outcomes this function serves untouched.
+ */
+export function enableRowDependencies(
+  signals: Pick<LedgerDegradationSignals, "stagedAgents" | "stagedMcpServers"> & {
+    readonly partition?: never;
+  },
+): readonly Dependency[] {
+  const dependencies: Dependency[] = [];
+  if (signals.stagedAgents === true) {
+    dependencies.push("agents");
+  }
+
+  if (signals.stagedMcpServers === true) {
+    dependencies.push("mcp");
+  }
+
+  return dependencies;
+}
 
 /**
  * Generated-name candidates produced by `domain/name.ts` generators for the
@@ -528,27 +620,56 @@ function compareNames(a: string, b: string): number {
   return a.localeCompare(b);
 }
 
+/**
+ * One entry of an owner map. `disabled` carries the owning record's
+ * `isRecordedButDisabled` verdict into the message so a refused install can name
+ * WHY the slot looks empty on disk -- see `collectOwners`.
+ */
+interface NameOwner {
+  readonly plugin: string;
+  readonly marketplace: string;
+  readonly disabled: boolean;
+}
+
+/**
+ * ENBL-18 / ENBL-19: every record in the scope reserves its generated names,
+ * disabled ones included. A disabled record retains its inventory, so its names
+ * stay reserved even though it materialized nothing on disk. That is the
+ * deliberate reading: the reservation is what lets a later `enable` re-take its
+ * own names, and it is what keeps an `uninstall` of the disabled plugin from
+ * unstaging an artifact a second plugin would otherwise have installed under the
+ * same name in the meantime.
+ *
+ * The cost is a refusal the disk cannot explain -- the conflicting name occupies
+ * no file. `disabled` is threaded so the message can, and `uninstall <owner>`
+ * remains the remedy.
+ */
 function collectOwners(state: ExtensionState): {
-  skillOwners: Map<string, { plugin: string; marketplace: string }>;
-  commandOwners: Map<string, { plugin: string; marketplace: string }>;
-  agentOwners: Map<string, { plugin: string; marketplace: string }>;
+  skillOwners: Map<string, NameOwner>;
+  commandOwners: Map<string, NameOwner>;
+  agentOwners: Map<string, NameOwner>;
 } {
-  const skillOwners = new Map<string, { plugin: string; marketplace: string }>();
-  const commandOwners = new Map<string, { plugin: string; marketplace: string }>();
-  const agentOwners = new Map<string, { plugin: string; marketplace: string }>();
+  const skillOwners = new Map<string, NameOwner>();
+  const commandOwners = new Map<string, NameOwner>();
+  const agentOwners = new Map<string, NameOwner>();
 
   for (const [mpName, mp] of Object.entries(state.marketplaces)) {
     for (const [pluginName, plugin] of Object.entries(mp.plugins)) {
+      const owner: NameOwner = {
+        plugin: pluginName,
+        marketplace: mpName,
+        disabled: isRecordedButDisabled(plugin),
+      };
       for (const n of plugin.resources.skills) {
-        skillOwners.set(n, { plugin: pluginName, marketplace: mpName });
+        skillOwners.set(n, owner);
       }
 
       for (const n of plugin.resources.prompts) {
-        commandOwners.set(n, { plugin: pluginName, marketplace: mpName });
+        commandOwners.set(n, owner);
       }
 
       for (const n of plugin.resources.agents) {
-        agentOwners.set(n, { plugin: pluginName, marketplace: mpName });
+        agentOwners.set(n, owner);
       }
     }
   }
@@ -559,13 +680,17 @@ function collectOwners(state: ExtensionState): {
 function collectConflicts(
   kind: string,
   names: readonly string[],
-  owners: ReadonlyMap<string, { plugin: string; marketplace: string }>,
+  owners: ReadonlyMap<string, NameOwner>,
 ): string[] {
   const conflicts: string[] = [];
   for (const n of [...names].sort(compareNames)) {
     const owner = owners.get(n);
     if (owner !== undefined) {
-      conflicts.push(`${kind} "${n}" already owned by plugin "${owner.plugin}"`);
+      // The `disabled` qualifier is the only variable part: a disabled owner
+      // holds the name while occupying no disk slot, so the bare wording sent
+      // the user looking for a file that is not there.
+      const ownerKind = owner.disabled ? "disabled plugin" : "plugin";
+      conflicts.push(`${kind} "${n}" already owned by ${ownerKind} "${owner.plugin}"`);
     }
   }
 
@@ -597,6 +722,12 @@ function collectConflicts(
  * has no `mcpServers` field. PRD §6.5 places MCP cross-slot collision at
  * the bridge layer (MC-4), not in this orchestrator-tier guard.
  *
+ * ENBL-18: DISABLED records own their names too -- see `collectOwners` for why
+ * the reservation is kept rather than filtered. The caller's own record is
+ * excluded via `removePluginRecord` (ENBL-19), so this only ever refuses an
+ * install against a DIFFERENT plugin's reservation, and the conflict line names
+ * the owner as disabled when it is.
+ *
  * @throws CrossPluginConflictError when ANY name collides; the message
  *   lists every conflict in the order above. Pre-disk-write per RN-3.
  */
@@ -617,6 +748,43 @@ export function assertNoCrossPluginConflicts(
   if (conflicts.length > 0) {
     throw new CrossPluginConflictError(conflicts);
   }
+}
+
+/**
+ * PI-6 cross-plugin guard helper. Returns a shallow-cloned state with the
+ * (marketplace, plugin) record removed -- so {@link assertNoCrossPluginConflicts}
+ * counts this plugin's OWN current resources as "not yet owned" and only
+ * catches conflicts against OTHER plugins.
+ *
+ * Shallow-clone discipline: deep-clone only the bytes the guard reads
+ * (marketplaces -> per-mp -> plugins map). Every other branch reference is
+ * shared, and the caller's state object is never mutated. This keeps the helper
+ * cheap on hot paths.
+ *
+ * Single implementation: the install, update and reinstall ledgers all consume
+ * this export. Two near-identical private copies once lived in `update.ts` and
+ * `reinstall.ts`; `sonarjs/no-identical-functions` is an error in this repo, so
+ * a third copy is not an option and the shared tier is the right home anyway.
+ */
+export function removePluginRecord(
+  state: ExtensionState,
+  marketplace: string,
+  plugin: string,
+): ExtensionState {
+  const cloned: ExtensionState = {
+    schemaVersion: state.schemaVersion,
+    marketplaces: { ...state.marketplaces },
+  };
+  const mp = cloned.marketplaces[marketplace];
+  if (mp === undefined) {
+    return cloned;
+  }
+
+  const newPlugins = { ...mp.plugins };
+  // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- newPlugins is a Record<string,...> local to this helper.
+  delete newPlugins[plugin];
+  cloned.marketplaces[marketplace] = { ...mp, plugins: newPlugins };
+  return cloned;
 }
 
 /**

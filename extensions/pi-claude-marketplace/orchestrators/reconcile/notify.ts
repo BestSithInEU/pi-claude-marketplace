@@ -44,11 +44,17 @@ import { assertNever } from "../../shared/errors.ts";
 import { malformedReasonsForKinds } from "../../shared/notify-reasons.ts";
 import { compareByNameThenScope } from "../../shared/notify.ts";
 import { narrowUnsupportedKinds } from "../../shared/probe-classifiers.ts";
+import { enableRowDependencies } from "../plugin/shared.ts";
 
 import { sourceMismatchOutcomeSubject } from "./apply-outcomes.ts";
 import { plannedSourceMismatchSubject } from "./types.ts";
 
-import type { PerEntryOutcome, PluginInstalledOutcome } from "./apply-outcomes.ts";
+import type {
+  PerEntryOutcome,
+  PluginBackfilledOutcome,
+  PluginEnabledOutcome,
+  PluginInstalledOutcome,
+} from "./apply-outcomes.ts";
 import type { PendingMsg, ReconcileAppliedMsg } from "./reconcile.messaging.ts";
 import type { PlannedPluginInstall, ReconcilePlan } from "./types.ts";
 import type { MarketplaceManifest } from "../../domain/manifest.ts";
@@ -59,6 +65,7 @@ import type {
   MarketplaceStatus,
   PluginInstalledMessage,
   PluginNotificationMessage,
+  PluginPartiallyInstalledMessage,
   Reason,
   ReconcileAppliedCascadeMessage,
 } from "../../shared/notify.ts";
@@ -401,9 +408,10 @@ export function buildReconcilePendingNotification(
 
     for (const o of plan.pluginsToEnable) {
       // The bucket is populated only when a recorded plugin carries the
-      // empty-resources marker (`isRecordedButDisabled` in plan.ts). The
-      // loop runs unconditionally so the enable wiring exercises this
-      // projection arm whenever the planner produced any enable rows.
+      // explicit `enabled: false` boolean (`isRecordedButDisabled` in
+      // persistence/state-io.ts). The loop runs unconditionally so the enable
+      // wiring exercises this projection arm whenever the planner produced any
+      // enable rows.
       const block = ensureMarketplaceBlock(byMp, o.scope, o.marketplace);
       block.plugins.push({
         status: "will enable",
@@ -468,9 +476,9 @@ export function isReconcilePlanListEmpty(plans: readonly ReconcilePlan[]): boole
 /**
  * `enabled` is NOT a member of PLUGIN_STATUSES (only `disabled` is). A
  * successful enable re-materializes the plugin via installPlugin, so the
- * projection emits the `installed` row (with empty dependencies -- the
- * orchestrated EnableDisablePluginOutcome does not carry declaresAgents /
- * declaresMcp). The reverse asymmetry (a successful disable maps to
+ * projection emits the `installed` row, deriving its `dependencies` from the
+ * ledger's staged-count signals exactly as the install arm derives its own
+ * (SEV-01 / WR-06). The reverse asymmetry (a successful disable maps to
  * `disabled`) is structural: `disabled` IS a member of PLUGIN_STATUSES.
  */
 /**
@@ -484,16 +492,144 @@ export function isReconcilePlanListEmpty(plans: readonly ReconcilePlan[]): boole
  * today: `info`, no reasons brace (NREG-01). The reconcile-applied cascade
  * suppresses the /reload trailer at the kind level (RECON-04), so `needsReload`
  * never surfaces a hint.
+ *
+ * SURF-05 / D-63-08 / IN-07: the row also carries the ledger's orphan-rewake
+ * signal, in the emit order `install.ts` and the sibling enable projection both
+ * use -- `{orphan rewake}` first, then the per-kind malformed tokens. The
+ * orphan token moves no severity channel: the malformed rule alone decides
+ * `warning` versus `info`.
  */
 function installedRowFromOutcome(outcome: PluginInstalledOutcome): PluginInstalledMessage {
   const degradedReasons = malformedReasonsForKinds(outcome.degradedKinds);
+  const reasons: ContentReason[] = [
+    ...(outcome.orphanRewake === true ? (["orphan rewake"] as const) : []),
+    ...degradedReasons,
+  ];
   return {
     status: "installed",
     name: outcome.plugin,
     ...(outcome.version !== undefined && { version: outcome.version }),
     dependencies: outcome.dependencies,
-    ...(degradedReasons.length > 0 && { reasons: degradedReasons }),
+    ...(reasons.length > 0 && { reasons }),
     severity: degradedReasons.length > 0 ? "warning" : "info",
+    needsReload: true,
+  };
+}
+
+/**
+ * Build the row for a realized reconcile enable.
+ *
+ * ENBL-07 / FSTAT-07 / D-66-04: a re-enable admitted through the partial gate
+ * re-materializes with one or more component kinds DROPPED, and the record it
+ * writes carries `installable: false` plus that same `unsupported` kind list -- so
+ * the clean `(installed)` row would contradict the `(partially-installed)` row
+ * `list` renders for the record immediately afterwards. The kinds compose
+ * through the shared `narrowUnsupportedKinds` seam, exactly as on the
+ * `plugin-installed` / `plugin-backfilled` arms.
+ *
+ * SEV-01 / WR-06: `dependencies` is DERIVED on both arms from the ledger's
+ * staged-agent / staged-MCP verdicts through the same `enableRowDependencies`
+ * seam the standalone enable row uses, so the `{requires pi-subagents}` /
+ * `{requires pi-mcp}` markers fire on a projected re-enable exactly as they do
+ * on the sibling install arm. A re-enable that staged neither renders
+ * byte-identically to before (NREG-01).
+ *
+ * SURF-05 / WARN-01: the row also carries the ledger's other two degradation
+ * signals in `install.ts`'s emit order -- `{orphan rewake}`, then the per-kind
+ * `{malformed skill}` / `{malformed command}` tokens, then the dropped kinds --
+ * so the standalone verb and this projection render one brace, not two.
+ *
+ * Severity: `info` for a dropped-kind-only re-enable per SEV-03 (the partial
+ * shortfall predates the enable, so the request was fully carried out -- the
+ * stance the sibling `plugin-backfilled` partial arm takes for a still-degraded
+ * promotion). A MALFORMED component takes the `warning` raise instead: it is a
+ * degrade the ledger just produced, exactly as on the `plugin-installed` arm
+ * above (WARN-01 / D-86-03).
+ */
+function enabledRowFromOutcome(
+  outcome: PluginEnabledOutcome,
+): PluginInstalledMessage | PluginPartiallyInstalledMessage {
+  const unsupported = outcome.unsupported ?? [];
+  const malformed = malformedReasonsForKinds(outcome.degradedKinds);
+  const reasons: ContentReason[] = [
+    ...(outcome.orphanRewake === true ? (["orphan rewake"] as const) : []),
+    ...malformed,
+  ];
+  const severity = malformed.length > 0 ? "warning" : "info";
+  const dependencies = enableRowDependencies(outcome);
+  if (unsupported.length > 0) {
+    return {
+      status: "partially-installed",
+      name: outcome.plugin,
+      ...(outcome.version !== undefined && { version: outcome.version }),
+      dependencies,
+      reasons: [...reasons, ...narrowUnsupportedKinds(unsupported)],
+      severity,
+      needsReload: true,
+    };
+  }
+
+  return {
+    status: "installed",
+    name: outcome.plugin,
+    ...(outcome.version !== undefined && { version: outcome.version }),
+    dependencies,
+    ...(reasons.length > 0 && { reasons }),
+    // D-03/D-06: a realized re-enable re-materializes artifacts -> reloads.
+    severity,
+    needsReload: true,
+  };
+}
+
+/**
+ * Build the row for a load-time backfill.
+ *
+ * WR-04: the backfill runs the same class of ledger as the install and enable
+ * arms, so it names the same two degradation signals in `install.ts`'s emit
+ * order -- `{orphan rewake}`, then the per-kind `{malformed skill}` /
+ * `{malformed command}` tokens, then (on the degraded arm) the dropped kinds.
+ * A backfill that reports neither renders byte-identically to before (NREG-01).
+ *
+ * Severity: a backfill is a benign promotion (re-materializing now-supported
+ * components), NOT a new degradation, so a still-degraded arm stays `info` per
+ * SEV-03 -- the newly-degrades warning fires on the autoupdate cascade, not
+ * here. A MALFORMED component takes the `warning` raise on either arm: it is a
+ * degrade this backfill's own ledger just produced, exactly as on the
+ * `plugin-installed` and `plugin-enabled` arms (WARN-01 / D-86-03).
+ */
+function backfilledRowFromOutcome(
+  outcome: PluginBackfilledOutcome,
+): PluginInstalledMessage | PluginPartiallyInstalledMessage {
+  const malformed = malformedReasonsForKinds(outcome.degradedKinds);
+  const reasons: ContentReason[] = [
+    ...(outcome.orphanRewake === true ? (["orphan rewake"] as const) : []),
+    ...malformed,
+  ];
+  const severity = malformed.length > 0 ? "warning" : "info";
+  if (outcome.installable) {
+    return {
+      status: "installed",
+      name: outcome.plugin,
+      ...(outcome.version !== undefined && { version: outcome.version }),
+      dependencies: outcome.dependencies,
+      ...(reasons.length > 0 && { reasons }),
+      severity,
+      needsReload: true,
+    };
+  }
+
+  return {
+    status: "partially-installed",
+    name: outcome.plugin,
+    ...(outcome.version !== undefined && { version: outcome.version }),
+    dependencies: outcome.dependencies,
+    // SEV-05 / D-69-04: populate the factual `{reasons}` brace from the
+    // re-resolved dropped-component kinds through the SAME shared
+    // `narrowUnsupportedKinds` seam the install/list/info surfaces use -- no
+    // per-state reasons mechanism. An empty set renders brace-less
+    // (byte-identical to a no-dropped-kinds backfill).
+    reasons: [...reasons, ...narrowUnsupportedKinds(outcome.unsupported)],
+    severity,
     needsReload: true,
   };
 }
@@ -533,36 +669,7 @@ function applyOutcomeToBlock(
       // `dependencies` for the soft-dep markers; a partial re-materialize (still
       // degraded) renders a `partially-installed` row. Both fold into THIS single
       // applied cascade -- no second notify() (RECON-04).
-      if (outcome.installable) {
-        block.plugins.push({
-          status: "installed",
-          name: outcome.plugin,
-          ...(outcome.version !== undefined && { version: outcome.version }),
-          dependencies: outcome.dependencies,
-          severity: "info",
-          needsReload: true,
-        });
-      } else {
-        block.plugins.push({
-          status: "partially-installed",
-          name: outcome.plugin,
-          ...(outcome.version !== undefined && { version: outcome.version }),
-          dependencies: outcome.dependencies,
-          // SEV-05 / D-69-04: populate the factual `{reasons}` brace from the
-          // re-resolved dropped-component kinds through the SAME shared
-          // `narrowUnsupportedKinds` seam the install/list/info surfaces use --
-          // no per-state reasons mechanism. An empty set renders brace-less
-          // (byte-identical to a no-dropped-kinds backfill).
-          reasons: narrowUnsupportedKinds(outcome.unsupported),
-          // SEV-03 / A3: a backfill is a benign promotion (re-materializing
-          // now-supported components), NOT a new degradation, so it stays info.
-          // The SEV-03 newly-degrades warning fires only on the autoupdate
-          // cascade, not on this load-time backfill row.
-          severity: "info",
-          needsReload: true,
-        });
-      }
-
+      block.plugins.push(backfilledRowFromOutcome(outcome));
       return;
     case "plugin-uninstalled":
       block.plugins.push({
@@ -583,16 +690,23 @@ function applyOutcomeToBlock(
       // empty dependencies array suppresses soft-dep markers, which is the
       // safe default for a re-materialization that wouldn't change the
       // companion-extension surface.
-      block.plugins.push({
-        status: "installed",
-        name: outcome.plugin,
-        ...(outcome.version !== undefined && { version: outcome.version }),
-        dependencies: [],
-        // D-03/D-06: a realized re-enable re-materializes artifacts -> info,
-        // reloads.
-        severity: "info",
-        needsReload: true,
-      });
+      //
+      // ENBL-07 / FSTAT-07 / D-66-04: a re-enable that went through the partial
+      // gate dropped component kinds, so it takes the `(partially-installed)`
+      // projection instead -- the SAME split the standalone enable verb and the
+      // `plugin-backfilled` arm make, and the row the very next `list` renders
+      // for that record.
+      //
+      // Severity splits on WHICH degradation the ledger reported, not on which
+      // projection arm was picked. A dropped-kind shortfall PREDATES the enable
+      // (the record was already degraded when it was disabled), so the
+      // requested transition was fully carried out and the row stays `info` --
+      // SEV-03 parity with the `install --partial` success row and the
+      // still-degraded `plugin-backfilled` arm. A malformed-frontmatter degrade
+      // is one this enable's own ledger just produced, so it raises to
+      // `warning` -- WARN-01 parity with the install row for the same ledger
+      // run. Both are composed by `enabledRowFromOutcome`.
+      block.plugins.push(enabledRowFromOutcome(outcome));
       return;
     case "plugin-disabled":
       block.plugins.push({
