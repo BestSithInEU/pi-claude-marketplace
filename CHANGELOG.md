@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+- A hook handler's `timeout` is now read as seconds, which is what Claude Code's hooks specification declares and what plugin authors write. The bridge consumed the bare number as milliseconds, so a plugin's `timeout: 2` -- two seconds upstream -- armed a 2 ms SIGTERM that killed the handler at spawn. Every declared timeout was a thousand times shorter than written, and a hook killed that way degraded to a silent no-op with nothing in the output to say so. Thanks to @rakesh-vs for the contribution (#138).
+
+- Hook timeout defaults now match Claude Code per event. Upstream gives a `command` handler 600 s and then lowers it -- to 30 s when the hook runs on `UserPromptSubmit`, and to 1.5 s on `SessionEnd`. The bridge applied a flat 600 s everywhere, so a prompt-submit hook, which blocks the turn while it runs, got twenty times the wall clock its author expected. Note this changes behavior for hooks that declared no timeout at all: a `SessionEnd` hook now gets 1.5 s rather than 600 s, and one that needs longer should say so with an explicit `timeout`. Two mechanisms behind those numbers are still missing: upstream shares the `SessionEnd` budget across every such hook, and caps a declared timeout there at 60 s, while the bridge applies it per hook and honors a declared value unbounded.
+
+- Those reductions apply to the synchronous dispatcher only. Upstream lowers them because the handler holds up the turn, which is not true of an `asyncRewake` handler -- it is registered and left to run while dispatch returns immediately -- so background hooks keep the 600 s default on every event. `asyncRewake` is an extension of ours with no upstream analog, so there is no upstream budget for it to match.
+
+- The hooks bridge now carries the field in seconds from end to end, and converts once, inside the timer ladder that installs the `setTimeout` calls. Both execution lanes read the field through one function, so they cannot drift apart on the unit or on the defaults. A hook killed by that ladder now says so on the debug channel, naming the plugin, the event, and the budget it exceeded; it previously arrived as a bare signal kill, indistinguishable from a crash.
+
+- The ladder clamps a timeout to what a timer can represent. `setTimeout` cannot express a delay above about 24.8 days: Node replaces a larger one with a single millisecond and warns on standard error. So a plugin that wrote its timeout in milliseconds to suit the old behavior -- `timeout: 3600000` for an hour -- would have been killed at spawn once that value was read as seconds, landing back in the same no-op by a different route. Such a plugin now runs to the ceiling instead.
+
+- A `timeout` that is not a number falls back to the default for its event, and the hooks schema keeps admitting the field at any type. Declaring it as strictly numeric would make a quoted number a structural parse failure, which is reserved for invalid JSON, a shape mismatch, and a missing required `command`. The blast radius would have been the whole plugin rather than the one field: refused at install and not recoverable with `--force`, and for a plugin already installed, every one of its hooks dropped from the routing table on the next load with no message anywhere.
+
 ## [0.16.1] - 2026-08-18
 
 - The development dependency on the Pi host API moved to 0.84.2. That release adds a stop reason for a provider request that Pi deferred to a batch or asynchronous lane, and the turn-boundary hook dispatcher now treats it as an in-flight state that runs no Stop hooks, the same as it already treats a pending request. Nothing in the extension behaves differently on a Pi release that never reports the new reason.
