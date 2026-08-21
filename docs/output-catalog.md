@@ -644,6 +644,24 @@ A marketplace operation has failed.
 ⊘ ghost-mp [project] (failed) {not added}
 ```
 
+### Failure -- marketplace not added, cross-scope remedy (CMP-4 / SCOPE-01)
+
+The same failure as above, plus an advisory remedy trailer, emitted when the marketplace CONTAINER is registered in the scope the install did NOT target. The trigger case is a repo-bundled marketplace: `install <plugin>@<marketplace>` with no `--scope` targets `user`, the marketplace is registered only at `project`, and the bare row above names neither where the container lives nor what to do about it. The install still FAILS -- D-29 is Locked, a user-target install may source only from user scope (CMP-4), so there is no fallback and no retarget. The `{not added}` brace, the `error` severity, and the summary line are all unchanged; only the trailer is added, and a miss in BOTH scopes renders the bare row above byte-for-byte.
+
+Both remedies act on SCOPE, the axis that failed. `marketplace add` comes FIRST because it makes the command the user actually typed succeed; re-running at the other scope assumes they meant that scope all along, which a bare `--scope` does not establish. `--local` is deliberately absent: it selects the physical config file WITHIN a scope, so it cannot resolve a scope miss, and naming it would present the tracked-vs-untracked choice as part of the fix.
+
+Three-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the detail row, then the remedy trailer, each separated by one blank line and each at column 0 -- the 2-space and 4-space indents are the plugin-row and cause-chain grammar and are never borrowed for prose. The trailer byte form is FROZEN. Severity `error`; no reload-hint.
+
+<!-- catalog-state: missing-marketplace-not-added-cross-scope -->
+
+```text
+A marketplace operation has failed.
+
+⊘ mp [user] (failed) {not added}
+
+Marketplace "mp" is registered at project scope. Add it at user scope with marketplace add, or re-run the install with --scope project.
+```
+
 ### Failure -- a name a DISABLED plugin still owns (ENBL-18)
 
 The pre-flight cross-plugin guard refuses an install when a generated skill, command, or agent name belongs to a different plugin in the same scope. A DISABLED plugin is such an owner. Disable keeps the installation record and its component inventory (ENBL-18), thus the names stay reserved even though the disable deleted every artifact from disk.

@@ -1557,6 +1557,19 @@ export interface MarketplaceNotAddedMessage {
   readonly kind: "marketplace-not-added";
   readonly name: string;
   readonly scope?: Scope;
+  /**
+   * CMP-4 / SCOPE-01: the caller found the marketplace CONTAINER in the scope
+   * it did not target. Gates the cross-scope remedy trailer and nothing else --
+   * the `{not added}` brace, the severity, and the summary line are unchanged,
+   * and every construction site that omits it renders the bare row.
+   *
+   * A BOOLEAN, deliberately: the caller decides WHETHER a remedy applies, this
+   * file owns the BYTES. A caller-supplied string would put user-visible prose
+   * back in the hands of the construction site, which is exactly what
+   * `docs/messaging-style-guide.md` retired. `scope` supplies the target scope
+   * and the other scope is its complement, so no further field is needed.
+   */
+  readonly presentInOtherScope?: boolean;
 }
 
 /**
@@ -3527,7 +3540,7 @@ function renderMarketplaceNotAdded(
   message: MarketplaceNotAddedMessage,
   probe: SoftDepStatus,
 ): string {
-  return joinTokens([
+  const row = joinTokens([
     ICON_UNINSTALLABLE,
     message.name,
     message.scope === undefined ? "" : `[${message.scope}]`,
@@ -3535,6 +3548,43 @@ function renderMarketplaceNotAdded(
     "(failed)",
     composeReasons(["not added"], false, false, probe),
   ]);
+
+  const remedy = crossScopeRemedyTrailerFor(message);
+  return remedy === undefined ? row : `${row}\n\n${remedy}`;
+}
+
+/**
+ * CMP-4 / SCOPE-01 / D-29: the cross-scope remedy trailer, or `undefined` when
+ * the row carries none. Rendered below the `{not added}` row with ONE blank
+ * line, like every other trailer, and at column 0 -- 2-space and 4-space
+ * indents are the plugin-row and cause-chain grammar and must not be borrowed
+ * for prose.
+ *
+ * Both remedies act on the axis that failed, which is SCOPE. `--local` is
+ * deliberately absent: it selects the physical config file WITHIN a scope, so
+ * it cannot resolve a scope miss, and naming it here would present the
+ * tracked-vs-untracked choice as part of the fix.
+ *
+ * `marketplace add` comes FIRST because it makes the command the user actually
+ * typed succeed. Re-running at the other scope assumes they meant that scope
+ * all along -- a fair guess, but only a guess, and a bare `--scope` means they
+ * chose nothing rather than that they chose the other one.
+ *
+ * The byte form is FROZEN as a doc contract, locked in
+ * `docs/output-catalog.md` and `docs/messaging-style-guide.md` and asserted
+ * byte-for-byte by the catalog UAT.
+ */
+function crossScopeRemedyTrailerFor(message: MarketplaceNotAddedMessage): string | undefined {
+  if (message.presentInOtherScope !== true || message.scope === undefined) {
+    return undefined;
+  }
+
+  const presentIn: Scope = message.scope === "user" ? "project" : "user";
+  return (
+    `Marketplace "${message.name}" is registered at ${presentIn} scope. ` +
+    `Add it at ${message.scope} scope with marketplace add, ` +
+    `or re-run the install with --scope ${presentIn}.`
+  );
 }
 
 /**

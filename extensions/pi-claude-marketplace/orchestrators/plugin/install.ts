@@ -150,6 +150,7 @@ import {
   applyPartialCascadeFold,
   assertNoCrossPluginConflicts,
   cloneMarketplaceRecordForTargetScope,
+  crossScopeRemedyApplies,
   pickAgentsSourceDir,
   removePluginRecord,
   resolveInstallMarketplaceSource,
@@ -2257,10 +2258,20 @@ export async function installPlugin(opts: InstallPluginOptions): Promise<Install
       return { status: "failed", error: new Error(cause), cause };
     }
 
+    // CMP-4 / SCOPE-01: a bare `{not added}` row is not actionable when the
+    // container lives in the OTHER scope -- the repo-bundled-marketplace case,
+    // where a default-scope (user) install misses a project-only container. One
+    // read-only probe of that scope decides whether the row carries the remedy
+    // trailer. The probe never throws and never blocks the row (see
+    // `crossScopeRemedyApplies`); a `false` answer renders byte-identically to
+    // before.
+    const presentInOtherScope = await crossScopeRemedyApplies({ cwd, marketplace, scope });
+
     notify(ctx, pi, {
       kind: "marketplace-not-added",
       name: marketplace,
       scope,
+      ...(presentInOtherScope && { presentInOtherScope: true }),
     });
     return { status: "failed", error: new Error(cause), cause };
   }

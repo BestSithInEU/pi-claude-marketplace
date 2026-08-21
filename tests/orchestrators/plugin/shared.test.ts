@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,6 +7,7 @@ import test from "node:test";
 import { pathSource } from "../../../extensions/pi-claude-marketplace/domain/source.ts";
 import {
   assertNoCrossPluginConflicts,
+  crossScopeRemedyApplies,
   removePluginRecord,
   resolveCrossScopePluginTarget,
   resolveInstallMarketplaceSource,
@@ -436,6 +437,56 @@ test("CMP-3 :: resolveInstallMarketplaceSource returns undefined when project-ta
       targetState: { schemaVersion: 1, marketplaces: {} },
     });
     assert.equal(result, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CMP-4 / SCOPE-01 -- the cross-scope remedy probe. Decides WHETHER the
+// `{not added}` row carries a remedy trailer; owns no user-visible bytes.
+// ---------------------------------------------------------------------------
+
+test("CMP-4 / SCOPE-01 :: a user-target miss with a project-only container qualifies for the remedy", async () => {
+  await withTmpCwd(async (cwd) => {
+    await saveScopedState(cwd, "project", { mp: {} });
+    assert.equal(await crossScopeRemedyApplies({ cwd, marketplace: "mp", scope: "user" }), true);
+  });
+});
+
+test("CMP-4 / SCOPE-01 :: a user-target miss with no container anywhere does NOT qualify", async () => {
+  await withTmpCwd(async (cwd) => {
+    assert.equal(
+      await crossScopeRemedyApplies({ cwd, marketplace: "ghost-mp", scope: "user" }),
+      false,
+    );
+  });
+});
+
+test("CMP-4 / SCOPE-01 :: a PROJECT-target miss never qualifies -- CMP-3 already consulted user scope", async () => {
+  await withTmpCwd(async (cwd) => {
+    // Seed the user container to prove the answer is structural rather than
+    // data-driven: a project-target `marketplace-absent` means the CMP-3
+    // project->user fallback already missed, so a container visible here could
+    // not have been the one the install needed. The probe short-circuits on
+    // the target scope and never reads.
+    await saveScopedState(cwd, "user", { mp: {} });
+    assert.equal(
+      await crossScopeRemedyApplies({ cwd, marketplace: "mp", scope: "project" }),
+      false,
+    );
+  });
+});
+
+test("CMP-4 / SCOPE-01 :: an unreadable other-scope state.json degrades to `false` rather than throwing", async () => {
+  await withTmpCwd(async (cwd) => {
+    const projectLocations = locationsFor("project", cwd);
+    await mkdir(projectLocations.extensionRoot, { recursive: true });
+    await writeFile(
+      path.join(projectLocations.extensionRoot, "state.json"),
+      "{ this is not json",
+      "utf8",
+    );
+
+    assert.equal(await crossScopeRemedyApplies({ cwd, marketplace: "mp", scope: "user" }), false);
   });
 });
 

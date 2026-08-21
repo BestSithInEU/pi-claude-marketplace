@@ -93,6 +93,20 @@ const FIXTURES: readonly GrammarFixture[] = [
     },
   },
   {
+    // CMP-4 / SCOPE-01: the remedy-trailered arm adds a THIRD block below the
+    // detail row. The summary must still be the first line and still be
+    // distinct from the detail block -- a trailer that carried its own leading
+    // newline, or that was prepended rather than appended, would trip here.
+    label: "standalone marketplace-not-added carrying the cross-scope remedy trailer",
+    pi: piWithBothLoaded(),
+    message: {
+      kind: "marketplace-not-added",
+      name: "mp",
+      scope: "user",
+      presentInOtherScope: true,
+    },
+  },
+  {
     label: "standalone failed plugin-info (plugin subject, multi-line body)",
     pi: piWithBothLoaded(),
     message: {

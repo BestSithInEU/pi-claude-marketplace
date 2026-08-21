@@ -1358,6 +1358,22 @@ const FIXTURES: FixtureMap = {
         scope: "project",
       } satisfies NotificationMessage,
     },
+
+    // CMP-4 / SCOPE-01: the container exists in the scope the install did not
+    // target, so the row carries the remedy trailer. The message field is a
+    // BOOLEAN -- notify.ts composes every byte below, including both scope
+    // labels and the marketplace name. The bare-row state above is the SAME
+    // variant with the flag omitted, which is what a miss in both scopes emits.
+    "missing-marketplace-not-added-cross-scope": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "error",
+      message: {
+        kind: "marketplace-not-added",
+        name: "mp",
+        scope: "user",
+        presentInOtherScope: true,
+      } satisfies NotificationMessage,
+    },
   },
 
   // -------------------------------------------------------------------------
@@ -5024,14 +5040,14 @@ test("catalog UAT: every <!-- catalog-state: --> annotation pairs byte-equal wit
   const catalog = await readFile(CATALOG_PATH, "utf8");
   const examples = loadCatalogExamples(catalog);
 
-  // Exact count, not a floor: 173 is the number of annotated examples in
+  // Exact count, not a floor: 174 is the number of annotated examples in
   // docs/output-catalog.md, and it is what stops a `loadCatalogExamples`
   // refactor from silently parsing a fraction of the corpus. Update it
   // deliberately when catalog examples are added or removed.
   assert.equal(
     examples.length,
-    173,
-    `Expected exactly 173 annotated catalog examples; found ${examples.length}. Check that the discriminator comments in docs/output-catalog.md were not lost, and update this count when examples are added.`,
+    174,
+    `Expected exactly 174 annotated catalog examples; found ${examples.length}. Check that the discriminator comments in docs/output-catalog.md were not lost, and update this count when examples are added.`,
   );
 
   const failures: Failure[] = [];

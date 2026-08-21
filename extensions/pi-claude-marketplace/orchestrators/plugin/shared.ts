@@ -330,6 +330,48 @@ export async function resolveInstallMarketplaceSource(opts: {
 }
 
 /**
+ * CMP-4 / SCOPE-01: does the install's `marketplace-absent` row deserve the
+ * cross-scope remedy trailer -- i.e. is the marketplace CONTAINER registered in
+ * the scope the install did not target?
+ *
+ * ONLY a user-target install can qualify, and the early return is a
+ * correctness statement rather than an optimization. `marketplace-absent`
+ * means `resolveInstallMarketplaceSource` returned `undefined`; for a
+ * PROJECT target that function has ALREADY consulted user scope through the
+ * CMP-3 fallback, so the other scope provably holds no container. Reading it
+ * again could only ever answer `false`, and branching on that answer would
+ * add an arm no production path can reach.
+ *
+ * NEVER throws. The caller sits OUTSIDE the `withLockedStateTransaction`
+ * try/catch and no edge handler catches, so a throw here would replace a clean
+ * `{not added}` failure row with an unhandled rejection and NO `ctx.ui.notify`
+ * call at all (IL-2). `loadState` throws on malformed JSON, schema violation
+ * and any non-ENOENT read error, and a project `state.json` we are not
+ * installing into is exactly the file most likely to be broken or unreadable.
+ * The remedy is advisory; losing it is a strictly better outcome than losing
+ * the failure row, so an unreadable other scope degrades to "no remedy".
+ *
+ * Read-only, no network (NFR-5), no mutation.
+ */
+export async function crossScopeRemedyApplies(opts: {
+  readonly cwd: string;
+  readonly marketplace: string;
+  readonly scope: Scope;
+}): Promise<boolean> {
+  if (opts.scope !== "user") {
+    return false;
+  }
+
+  try {
+    const otherLocations = locationsFor("project", opts.cwd);
+    const otherState = await loadState(otherLocations.extensionRoot);
+    return otherState.marketplaces[opts.marketplace] !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Materialize the target-scope marketplace container needed by the current
  * state shape when CMP-3 falls back to a user-scope marketplace. The copied
  * record preserves source/manifest paths but starts with no target-scope

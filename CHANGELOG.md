@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- A default-scope (`user`) `install` against a marketplace registered only at project scope -- the common repo-bundled-marketplace case -- used to fail with a bare `{not added}` row that said neither where the marketplace lives nor what to do about it. The row now carries a remedy trailer naming both fixes: add the marketplace at the scope you targeted, or re-run the install at the scope it lives in. The install still fails and the `{not added}` brace, severity, and summary are unchanged; a marketplace missing from both scopes renders exactly the row it did before. The lookup that decides whether the trailer applies can never take the failure row down with it -- an unreadable state file in the other scope drops the advice and keeps the error.
+
+- Tab completion now offers `--local` on `install`, `update`, `uninstall`, `reinstall`, `enable`, and `disable`, with a description naming the file it writes to. Every one of those verbs already listed `[--local]` in its usage line, so the flag was documented everywhere and suggested nowhere.
+
 ## [0.17.0] - 2026-08-19
 
 - A plugin author can now ship a plugin that installs disabled. `defaultEnabled` is an optional boolean on a marketplace plugin entry or in `plugin.json`, with the entry winning and absence resolving to `true`.
