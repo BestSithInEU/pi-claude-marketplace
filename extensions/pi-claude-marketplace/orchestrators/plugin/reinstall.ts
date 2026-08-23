@@ -14,12 +14,37 @@
 // notify() owns severity, the reload-hint trailer, and the cause-chain.
 // Manual-recovery rows are folded into the cascade `plugins[]` array as
 // `PluginManualRecoveryMessage` entries rather than emitted separately.
-// Post-success soft warnings (bridge / maintenance) are NOT surfaced:
-// MarketplaceNotificationMessage has no field for them. The underlying side
-// effects (dropMarketplaceCache + rm) still run, and the internal `notes`
-// field on `ReinstallPluginOutcome` (orchestrated-mode consumers) still
-// carries the warning strings -- only the standalone-mode user-facing
-// surface is absent.
+// D-141-03 / D-141-05: the four bridges' staging warnings are split, not
+// folded flat. The skills and commands halves are DISCOVERY warnings and
+// reach both modes. The agents and mcp halves are hygiene warnings and stay
+// orchestrated-only beside the maintenance warnings, because
+// MarketplaceNotificationMessage has no field for one and a standalone user
+// has nothing to do about it (D-19-01, unchanged). The underlying side
+// effects (dropMarketplaceCache + rm) run either way, and the internal
+// `notes` field on `ReinstallPluginOutcome` carries every half for
+// orchestrated-mode consumers.
+//
+// The discovery diagnostic is emitted by whichever function renders the row
+// it qualifies, always after that row. The USER-INVOKED entrypoint reaches
+// `reinstallPlugins`: the edge handler calls it for every target form, and it
+// drives `reinstallPlugin` with `render: "none"` and renders the cascade
+// itself, so `reinstallPlugins` is the emitter for a user-invoked reinstall;
+// it reads the `discoveryWarnings` field the `render: "none"` arm puts on
+// each reinstalled outcome. The self-rendering `render !== "none"` arm emits
+// no discovery diagnostic at all -- no production caller reaches it, so it
+// carries no copy of the call to drift out of step with this one. Its
+// outcomes also leave `discoveryWarnings` undefined, which is a separate
+// fact: it is what would keep `surfaceReinstallDiscoveryWarnings` from
+// double-rendering, not the reason that arm is silent.
+//
+// `reconcile/backfill.ts` is the other production caller -- `render: "none"`
+// too, reached from `resources_discover` -> `applyReconcile`. It consumes the
+// outcome without rendering EITHER half: `PluginBackfilledOutcome` carries no
+// warnings field, and `reconcile/apply.ts::surfacePostCommitWarnings` renders
+// only the `plugin-installed`/`plugin-disabled` arms. So a reconcile-driven
+// re-materialize of a colliding plugin reports nothing while a
+// reconcile-driven INSTALL of the same plugin reports it. Tracked as part of
+// BACKLOG UPCASC-01 (decide the cascade rendering once).
 
 import { readFile, rm } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -109,6 +134,8 @@ import {
   removePluginRecord,
   resolveCrossScopePluginTarget,
   resolveInstalledMarketplaceTarget,
+  splitStagingWarnings,
+  surfaceDiscoveryWarnings,
 } from "./shared.ts";
 
 import type { AgentsReplacement, PreparedAgentsStaging } from "../../bridges/agents/index.ts";
@@ -254,6 +281,15 @@ type ReplacementEntry =
 
 interface LockedSuccess {
   readonly outcome: ReinstallPluginOutcome;
+  /**
+   * D-141-03: the skills and commands halves of the staging warnings. These
+   * reach BOTH modes -- mirrors install's two-array `InstallCtx` shape.
+   */
+  readonly discoveryWarnings: readonly string[];
+  /**
+   * The agents and mcp halves, plus the `finalizeReplacements` leak strings.
+   * Orchestrated-only per D-19-01.
+   */
   readonly bridgeWarnings: readonly string[];
   /**
    * S5: when the config-back loadConfig returned `invalid`, the write-back
@@ -323,17 +359,38 @@ export async function reinstallPlugin(
 
   const maintenanceWarnings = await runPostSuccessMaintenance(opts, locations);
   if (render === "none") {
-    const notes = [...locked.bridgeWarnings, ...maintenanceWarnings].map((w) => `warning: ${w}`);
-    return notes.length === 0 ? locked.outcome : { ...locked.outcome, notes };
+    const notes = [
+      ...locked.discoveryWarnings,
+      ...locked.bridgeWarnings,
+      ...maintenanceWarnings,
+    ].map((w) => `warning: ${w}`);
+    if (notes.length === 0) {
+      return locked.outcome;
+    }
+
+    // A non-empty `discoveryWarnings` always makes `notes` non-empty, so the
+    // early return above cannot drop the carrier. NREG-01: both keys stay
+    // absent on a clean reinstall.
+    return {
+      ...locked.outcome,
+      notes,
+      ...(locked.discoveryWarnings.length > 0 && {
+        discoveryWarnings: locked.discoveryWarnings,
+      }),
+    };
   }
 
-  // IN-01: post-success soft warnings (bridge + maintenance) are NOT
+  // IN-01 / D-19-01: the HYGIENE warnings (bridge + maintenance) are NOT
   // surfaced -- there is no clean MarketplaceNotificationMessage
   // representation for a post-success soft warning. The underlying side
   // effects (cache drop + data-dir rm + bridge finalize) still fire above;
   // the orchestrated-mode `notes` field at the `render === "none"` arm still
   // carries the warning strings for consumers outside the notify path.
-  // `maintenanceWarnings` is awaited strictly for its side effects.
+  // `maintenanceWarnings` is awaited strictly for its side effects. The
+  // DISCOVERY warnings are the D-141-03 exception, but this arm does not
+  // render them either: no production caller reaches it, and
+  // `reinstallPlugins` already renders them after the cascade row for the
+  // `render: "none"` arm every caller does reach.
 
   // Single-plugin reinstall success is a 1-row cascade carrying a
   // PluginReinstalledMessage variant; this branch and the bulk-cascade branch
@@ -535,7 +592,39 @@ export async function reinstallPlugins(
   }
 
   renderReinstallPartitionAndNotify(ctx, pi, outcomes, cardinality);
+  surfaceReinstallDiscoveryWarnings(ctx, outcomes);
   return Object.freeze(outcomes);
+}
+
+/**
+ * D-141-03 / D-141-05: render each reinstalled plugin's discovery warnings
+ * after the cascade its row lives in -- the user reads the row, then the
+ * detail that qualifies it. Mirrors `update.ts::surfaceUpdateDiscoveryWarnings`.
+ *
+ * This loop, not the `render !== "none"` arm of `reinstallPlugin`, is what a
+ * user-invoked reinstall reaches: the edge handler calls `reinstallPlugins`
+ * for every target form, and this function drives `reinstallPlugin` with
+ * `render: "none"`.
+ *
+ * The hygiene half never arrives here: only the DISCOVERY half rides
+ * `discoveryWarnings`, while `notes` keeps the flat fold for orchestrated
+ * consumers.
+ */
+function surfaceReinstallDiscoveryWarnings(
+  ctx: ExtensionContext,
+  outcomes: readonly ReinstallPluginOutcome[],
+): void {
+  for (const outcome of outcomes) {
+    if (outcome.partition !== "reinstalled" || outcome.discoveryWarnings === undefined) {
+      continue;
+    }
+
+    surfaceDiscoveryWarnings(ctx, {
+      plugin: outcome.name,
+      verb: "reinstalled",
+      warnings: outcome.discoveryWarnings,
+    });
+  }
 }
 
 /**
@@ -848,6 +937,7 @@ async function runLockedReinstall(
   if (mp === undefined || oldRecord === undefined) {
     return {
       outcome: { partition: "skipped", name: plugin, marketplace, scope, notes: ["not installed"] },
+      discoveryWarnings: [],
       bridgeWarnings: [],
     };
   }
@@ -875,6 +965,7 @@ async function runLockedReinstall(
         scope,
         notes: ["already disabled"],
       },
+      discoveryWarnings: [],
       bridgeWarnings: [],
     };
   }
@@ -995,12 +1086,11 @@ async function runLockedReinstall(
     throw errorWithManualRecovery(err, await rollbackReplacements(replacements));
   }
 
-  const bridgeWarnings = [
-    ...collectStagingWarnings(handles),
-    ...(await finalizeReplacements(replacements)),
-  ];
+  const staging = splitHandleWarnings(handles);
+  const bridgeWarnings = [...staging.bridge, ...(await finalizeReplacements(replacements))];
   return {
     outcome: successOutcome(scope, marketplace, plugin, oldSnapshot, handles),
+    discoveryWarnings: staging.discovery,
     bridgeWarnings,
     ...(invalidConfigWriteBack && { invalidConfigWriteBack: true }),
   };
@@ -1465,13 +1555,16 @@ function sameStrings(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
-function collectStagingWarnings(handles: PreparedHandles): readonly string[] {
-  return Object.freeze([
-    ...handles.skills.result.warnings,
-    ...handles.commands.result.warnings,
-    ...handles.agents.result.warnings,
-    ...handles.mcp.result.warnings,
-  ]);
+function splitHandleWarnings(handles: PreparedHandles): {
+  readonly discovery: readonly string[];
+  readonly bridge: readonly string[];
+} {
+  return splitStagingWarnings({
+    skills: handles.skills.result.warnings,
+    commands: handles.commands.result.warnings,
+    agents: handles.agents.result.warnings,
+    mcp: handles.mcp.result.warnings,
+  });
 }
 
 async function abortPartialHandles(handles: PartialPreparedHandles): Promise<readonly string[]> {

@@ -82,23 +82,52 @@ export function generatedSkillName(plugin: string, source: string): string {
  * Format: `<plugin>:<command>` -- the SEPARATOR is a colon, distinct from
  * the dash separator used by skills/agents. The `<plugin>-` prefix is
  * elided from `source` (acme + acme-foo -> acme:foo, NOT acme:acme-foo).
+ *
+ * CM-4: `source` may be a `/`-separated relative path reflecting
+ * a nested command file (e.g. "build/web" for commands/build/web.md). RN-2
+ * forbids path separators in a single safe name, so the path is split into
+ * segments and each segment is validated independently; the `<plugin>-`
+ * prefix is elided from the FIRST segment only; and the segments are joined
+ * with `:` so the nested file becomes `<plugin>:build:web` -- matching
+ * Claude Code's nested-command convention. A flat source ("foo") has a
+ * single segment and behaves exactly as before ("acme:foo"); "acme-foo"
+ * still elides to "acme:foo".
+ *
+ * D-141-02: an elision that would empty the head does not fire. A head of
+ * exactly "acme-" in plugin "acme" keeps its verbatim form, so
+ * `commands/acme-.md` becomes "acme:acme-" and `commands/acme-/lint.md`
+ * becomes "acme:acme-:lint" -- the two names Claude Code registers for the
+ * same tree. The elision exists to remove a stutter, and a head that is
+ * nothing but the stutter has no command name left underneath it.
+ *
+ * Commands only. `generatedSkillName` and `generatedAgentName` keep their
+ * throw, because Pi validates a skill name and rejects both a trailing and
+ * a doubled hyphen: keeping the head there would yield "acme-acme-" and
+ * move the same failure to a worse message further downstream.
  */
 export function generatedCommandName(plugin: string, source: string): string {
-  return generatedColonName(plugin, source);
-}
-
-function generatedColonName(plugin: string, source: string): string {
   assertSafeName(plugin);
-  assertSafeName(source);
+
+  const segments = source.split("/");
+
+  for (const seg of segments) {
+    assertSafeName(seg, `command path segment in "${source}"`);
+  }
+
   const prefix = `${plugin}-`;
-  const elided = source.startsWith(prefix) ? source.slice(prefix.length) : source;
-  // Re-validate the elided portion in isolation to catch e.g. an "acme-"
-  // source that elides to empty.
-  assertSafeName(elided);
-  const generated = `${plugin}:${elided}`;
+  const head = segments[0] ?? "";
+  const stripped = head.startsWith(prefix) ? head.slice(prefix.length) : head;
+  // D-141-02: keep the head verbatim when the elision would empty it.
+  const elidedHead = stripped === "" ? head : stripped;
+  // The stripped head still needs validation on its own: a safe head can
+  // strip down to an unsafe remainder ("acme-." leaves ".").
+  assertSafeName(elidedHead, `elided command path head in "${source}"`);
+
+  const generated = [plugin, elidedHead, ...segments.slice(1)].join(":");
   // Note: assertSafeName on the colon-bearing form -- colon is allowed
   // (PRD §6.5 RN-2 forbids only "/" and "\"), so this passes.
   assertSafeName(generated);
+
   return generated;
 }
 

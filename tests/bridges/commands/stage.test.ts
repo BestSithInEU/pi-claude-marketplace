@@ -6,7 +6,6 @@ import test from "node:test";
 
 import {
   abortPreparedCommands,
-  assertNoCommandCollisions,
   commitPreparedCommands,
   finalizeCommandsReplacement,
   prepareStageCommands,
@@ -17,7 +16,6 @@ import { locationsFor } from "../../../extensions/pi-claude-marketplace/persiste
 import { parseFrontmatter } from "../../../extensions/pi-claude-marketplace/platform/pi-api.ts";
 import { pathExists } from "../../../extensions/pi-claude-marketplace/shared/fs-utils.ts";
 
-import type { DiscoveredCommand } from "../../../extensions/pi-claude-marketplace/bridges/commands/types.ts";
 import type { ResolvedPluginInstallable } from "../../../extensions/pi-claude-marketplace/domain/resolver.ts";
 import type { ScopedLocations } from "../../../extensions/pi-claude-marketplace/persistence/locations.ts";
 
@@ -94,6 +92,43 @@ test("CM-1 commitPreparedCommands lands files at <extensionRoot>/resources/promp
     const statusTarget = path.join(scope.loc.promptsTargetDir, "acme:status.md");
     assert.equal(await pathExists(deployTarget), true);
     assert.equal(await pathExists(statusTarget), true);
+  } finally {
+    await scope.cleanup();
+  }
+});
+
+test("CM-4 nested command stages at <ext>/resources/prompts/<plugin>:<dir>:<cmd>.md", async () => {
+  const scope = await tmpScope();
+
+  try {
+    // Build a tmp plugin root with a nested command file.
+    const pluginRoot = await mkdtemp(path.join(os.tmpdir(), "nested-cmd-plugin-"));
+    const commandsDir = path.join(pluginRoot, "commands", "build");
+    await mkdir(commandsDir, { recursive: true });
+    await writeFile(path.join(commandsDir, "web.md"), "---\ndescription: nested\n---\nbody\n");
+
+    const prepared = await prepareStageCommands({
+      locations: scope.loc,
+      cwd: scope.loc.scopeRoot,
+      marketplaceName: "test-mp",
+      pluginName: "acme",
+      pluginRoot,
+      pluginDataDir: "/tmp/pi-data/test-mp/acme",
+      resolved: makeResolved(pluginRoot, "commands"),
+    });
+
+    assert.equal(prepared.kind, "staged");
+    assert.deepEqual([...prepared.result.recorded.map((r) => r.generatedName)], ["acme:build:web"]);
+
+    const leak = await commitPreparedCommands(prepared);
+    assert.equal(leak, undefined, "nested commit must not leak");
+
+    const target = path.join(scope.loc.promptsTargetDir, "acme:build:web.md");
+    assert.equal(
+      await pathExists(target),
+      true,
+      "nested command file lands at the colon-joined target path",
+    );
   } finally {
     await scope.cleanup();
   }
@@ -218,58 +253,6 @@ test('prepareStageCommands returns kind:"noop" when no commands AND no previousC
     await scope.cleanup();
   }
 });
-
-// RN-6 collisions -------------------------------------------------------
-
-test("RN-6 assertNoCommandCollisions throws with both source names listed", () => {
-  const collisions: DiscoveredCommand[] = [
-    {
-      sourceName: "acme-deploy",
-      generatedName: "acme:deploy",
-      commandFile: "/fake/acme-deploy.md",
-    },
-    {
-      sourceName: "deploy",
-      generatedName: "acme:deploy",
-      commandFile: "/fake/deploy.md",
-    },
-  ];
-
-  assert.throws(
-    () => {
-      assertNoCommandCollisions(collisions);
-    },
-    (err: unknown) => {
-      assert.ok(err instanceof Error);
-      assert.match(err.message, /Generated command name collision detected/);
-      // BOTH source names must appear in the message.
-      assert.match(err.message, /"acme-deploy"/);
-      assert.match(err.message, /"deploy"/);
-      assert.match(err.message, /"acme:deploy"/);
-      return true;
-    },
-  );
-});
-
-test("RN-6 assertNoCommandCollisions does NOT throw on disjoint names", () => {
-  const ok: DiscoveredCommand[] = [
-    {
-      sourceName: "acme-deploy",
-      generatedName: "acme:deploy",
-      commandFile: "/fake/acme-deploy.md",
-    },
-    {
-      sourceName: "status",
-      generatedName: "acme:status",
-      commandFile: "/fake/status.md",
-    },
-  ];
-
-  // No throw.
-  assertNoCommandCollisions(ok);
-});
-
-// Re-stage path ---------------------------------------------------------
 
 test("commitPreparedCommands removes previous-named files (re-stage path)", async () => {
   const scope = await tmpScope();
@@ -1143,4 +1126,80 @@ test("SUB-02 user-scope command keeps ${CLAUDE_PROJECT_DIR} literal; other two s
       await rm(tmp, { recursive: true, force: true });
     }
   });
+});
+
+// D-07 / D-141-03: the discovery warnings must survive the staging boundary.
+
+test("D-07 prepareStageCommands carries a discovery warning onto result.warnings", async () => {
+  const scope = await tmpScope();
+  const pluginRoot = await mkdtemp(path.join(os.tmpdir(), "stage-cmds-dupwarn-"));
+
+  try {
+    // Two sources, one generated name: `acme-tools/lint.md` elides its head
+    // (D-141-01) and lands on the same `acme:tools:lint` as `tools/lint.md`.
+    const commandsDir = path.join(pluginRoot, "commands");
+    await mkdir(path.join(commandsDir, "acme-tools"), { recursive: true });
+    await mkdir(path.join(commandsDir, "tools"), { recursive: true });
+    await writeFile(path.join(commandsDir, "acme-tools", "lint.md"), "first");
+    await writeFile(path.join(commandsDir, "tools", "lint.md"), "second");
+
+    const prepared = await prepareStageCommands({
+      locations: scope.loc,
+      cwd: scope.loc.scopeRoot,
+      marketplaceName: "test-mp",
+      pluginName: "acme",
+      pluginRoot,
+      pluginDataDir: "/tmp/pi-data/test-mp/acme",
+      resolved: makeResolved(pluginRoot, "commands"),
+    });
+
+    assert.equal(prepared.result.warnings.length, 1, "the discovery warning must not be dropped");
+    assert.match(prepared.result.warnings[0]!, /"acme:tools:lint"/);
+    assert.match(prepared.result.warnings[0]!, /ignoring duplicate/);
+    await abortPreparedCommands(prepared);
+  } finally {
+    await rm(pluginRoot, { recursive: true, force: true });
+    await scope.cleanup();
+  }
+});
+
+// CM-4: a nested source makes the generated name as long as the whole
+// relative path, so ENAMETOOLONG became reachable. The failure has to say
+// which command of which plugin, not name a path under a staging UUID.
+
+test("CM-4 prepareStageCommands names the plugin and the command on a too-long name", async () => {
+  const scope = await tmpScope();
+  const pluginRoot = await mkdtemp(path.join(os.tmpdir(), "stage-cmds-longname-"));
+
+  try {
+    // 200 + 1 + 200 path segments -> a ~400-character generated name, past
+    // the 255-byte basename limit every mainstream filesystem enforces.
+    const outer = "d".repeat(200);
+    const inner = "c".repeat(200);
+    const commandsDir = path.join(pluginRoot, "commands");
+    await mkdir(path.join(commandsDir, outer), { recursive: true });
+    await writeFile(path.join(commandsDir, outer, `${inner}.md`), "body");
+
+    const err = await prepareStageCommands({
+      locations: scope.loc,
+      cwd: scope.loc.scopeRoot,
+      marketplaceName: "test-mp",
+      pluginName: "acme",
+      pluginRoot,
+      pluginDataDir: "/tmp/pi-data/test-mp/acme",
+      resolved: makeResolved(pluginRoot, "commands"),
+    }).then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+
+    assert.ok(err instanceof Error, "expected a staging failure");
+    assert.match(err.message, /plugin "acme"/, "the failure names the plugin");
+    assert.match(err.message, new RegExp(`command "acme:${outer}:${inner}"`));
+    assert.ok(err.cause instanceof Error, "the errno rides Error.cause");
+    assert.match(err.cause.message, /ENAMETOOLONG/);
+  } finally {
+    await rm(pluginRoot, { recursive: true, force: true });
+    await scope.cleanup();
+  }
 });

@@ -138,9 +138,61 @@ test("CM-2 generatedCommandName uses COLON separator (not dash)", () => {
   assert.ok(!result.startsWith("acme-"), `expected colon-form, got "${result}"`);
 });
 
-test("CM-2 generatedCommandName throws when elision yields empty string", () => {
-  // source 'acme-' elides to '' which fails assertSafeName
-  assert.throws(() => generatedCommandName("acme", "acme-"), /non-empty/);
+test("D-141-02 generatedCommandName keeps a head the elision would empty", () => {
+  // 'acme-' would elide to '', so the elision does not fire and the head
+  // stays verbatim -- the name Claude Code registers for commands/acme-.md.
+  assert.equal(generatedCommandName("acme", "acme-"), "acme:acme-");
+});
+
+test("D-141-02 generatedCommandName keeps an emptied head of a nested source", () => {
+  assert.equal(generatedCommandName("acme", "acme-/lint"), "acme:acme-:lint");
+});
+
+test("D-141-02 generatedCommandName still rejects a head that strips to a dot", () => {
+  // The elision fires here (the remainder is non-empty) and leaves '.',
+  // which RN-2 forbids.
+  assert.throws(() => generatedCommandName("acme", "acme-."), /must not be/);
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// CM-4: nested command paths -- "/"-separated source joins with ":"
+// ──────────────────────────────────────────────────────────────────────────
+
+test("CM-4 generatedCommandName maps a nested source path to colon-separated segments", () => {
+  assert.equal(generatedCommandName("acme", "build/web"), "acme:build:web");
+});
+
+test("CM-4 generatedCommandName maps deeper nesting with one colon per segment", () => {
+  assert.equal(generatedCommandName("acme", "build/web/prod"), "acme:build:web:prod");
+});
+
+test("CM-4 generatedCommandName elides plugin prefix from the first segment only", () => {
+  assert.equal(generatedCommandName("acme", "acme-build/web"), "acme:build:web");
+});
+
+test("CM-4 generatedCommandName rejects a path with an empty segment", () => {
+  assert.throws(() => generatedCommandName("acme", "build//web"), /non-empty/);
+});
+
+test("CM-4 generatedCommandName rejects a backslash in a segment (OS sep must be normalized upstream)", () => {
+  assert.throws(() => generatedCommandName("acme", "build\\web"), /path separators/);
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// D-141-01: the CM-2 elision applies to the HEAD of the source path, and the
+// head is the first path segment when the source is nested.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("D-141-01 generatedCommandName elides the plugin prefix from a directory head", () => {
+  // Deliberate divergence: Claude Code 2.1.228 registers this source as
+  // "acme:acme-tools:lint" because it performs no elision at all. CM-2
+  // already diverged the same way for flat files ("acme-flat.md" is
+  // "acme:flat" here, "acme:acme-flat" upstream).
+  assert.equal(generatedCommandName("acme", "acme-tools/lint"), "acme:tools:lint");
+});
+
+test("D-141-01 generatedCommandName does not elide a non-head segment", () => {
+  assert.equal(generatedCommandName("acme", "build/acme-web"), "acme:build:acme-web");
 });
 
 // ──────────────────────────────────────────────────────────────────────────
