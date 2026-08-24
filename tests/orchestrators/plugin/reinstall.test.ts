@@ -873,7 +873,7 @@ test("PRL-05 bulk reinstall explicit scope filters targets", async () => {
   });
 });
 
-test("ATTR-03/SCOPE-01: explicit-scope-plugin reinstall of an other-scope-only target emits the scope-qualified not-added row", async () => {
+test("ATTR-03/SCOPE-01: explicit-scope-plugin reinstall of an other-scope-only target emits (skipped) {not installed}", async () => {
   await withHermeticHome(async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "reinstall-cross-scope-source-"));
     try {
@@ -906,9 +906,9 @@ test("ATTR-03/SCOPE-01: explicit-scope-plugin reinstall of an other-scope-only t
       const body = notifications.at(-1)?.message ?? "";
       assert.equal(
         body,
-        "A marketplace operation has failed.\n\n⊘ mp [project] (failed) {marketplace not added to project scope}",
+        "A plugin operation needs attention.\n\n● mp [project]\n  ⊘ plug (skipped) {not installed}",
       );
-      assert.equal(notifications.at(-1)?.severity, "error");
+      assert.equal(notifications.at(-1)?.severity, "warning");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }

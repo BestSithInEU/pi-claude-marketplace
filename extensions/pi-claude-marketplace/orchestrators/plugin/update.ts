@@ -122,7 +122,7 @@ import { narrowUnsupportedKinds } from "../../shared/probe-classifiers.ts";
 import { withLockedStateTransaction, withStateGuard } from "../../transaction/with-state-guard.ts";
 import { DEFAULT_CREDENTIAL_OPS, buildAuthForHost, hostFromCloneUrl } from "../auth-host.ts";
 import { DEFAULT_GIT_OPS, refreshGitHubClone, type GitOps } from "../marketplace/shared.ts";
-import { crossScopeFlag } from "../marketplace/shared.ts";
+import { crossScopeFlag, marketplaceInOtherScope } from "../marketplace/shared.ts";
 
 import {
   canonicalCloneUrl,
@@ -136,6 +136,7 @@ import { discoverGeneratedNames } from "./discover-names.ts";
 import {
   assertNoCrossPluginConflicts,
   MarketplaceNotAddedSignal,
+  missIsNotInstalled,
   maybeWritePluginConfigBack,
   removePluginRecord,
   resolveInstalledMarketplaceTarget,
@@ -476,6 +477,29 @@ async function handleEnumerateFailure(opts: UpdatePluginsOptions, err: unknown):
   const { ctx, pi, cwd, target, scope: explicitScope } = opts;
 
   if (err instanceof MarketplaceNotAddedSignal) {
+    // SCOPE-01: the container sits one scope over, so nothing is installed at
+    // the scope the operator named. The PLUGIN is the subject -- the same
+    // `(skipped) {not installed}` row an in-scope marketplace with no record
+    // yields, because that is the identical underlying fact.
+    if (err.notInstalledAt !== undefined && err.plugin !== undefined) {
+      notifyWithContext(ctx, pi, UPDATE_CONTEXT, [
+        {
+          name: err.marketplace,
+          scope: err.notInstalledAt,
+          plugins: [
+            {
+              status: "skipped",
+              name: err.plugin,
+              reasons: ["not installed"],
+              severity: "warning",
+              needsReload: false,
+            },
+          ],
+        },
+      ]);
+      return;
+    }
+
     notify(ctx, pi, {
       kind: "marketplace-not-added",
       name: err.marketplace,
@@ -3084,11 +3108,20 @@ async function enumerateMarketplaceTarget(
   const state = await loadState(resolved.locations.extensionRoot);
   const mp = state.marketplaces[mpName];
   if (mp === undefined) {
-    // Defensive: `resolveUpdateMarketplaceScope` only returns a scope whose
-    // container it confirmed present. A miss here is a concurrent-removal edge;
-    // signal it as not-added carrying the resolved scope so the standalone
-    // emission still fires (never a raw throw escaping the orchestrator).
-    throw new MarketplaceNotAddedSignal(mpName, explicitScope);
+    // `resolveUpdateMarketplaceScope` can hand back the REQUESTED scope without
+    // a container there, so this arm carries the ordinary explicit-scope miss
+    // as well as the concurrent-removal edge. Either way it signals not-added
+    // rather than letting a raw throw escape the orchestrator.
+    //
+    // SCOPE-01: when the container sits one scope over, nothing is installed at
+    // the scope the operator named, so the PLUGIN is the row's subject.
+    const notInstalled =
+      target.kind === "plugin" &&
+      explicitScope !== undefined &&
+      (await marketplaceInOtherScope({ cwd, marketplace: mpName, scope: explicitScope }))
+        ? { scope: explicitScope, plugin: target.plugin }
+        : undefined;
+    throw new MarketplaceNotAddedSignal(mpName, explicitScope, notInstalled);
   }
 
   if (target.kind === "plugin") {
@@ -3159,7 +3192,19 @@ async function resolveUpdateMarketplaceScope(
   // SCOPE-01: carry the REQUESTED scope (explicit form) so the `[scope]`
   // bracket reads "not added in the scope you asked for"; the bare form that
   // missed everywhere carries no bracket (resolution.requestedScope undefined).
-  throw new MarketplaceNotAddedSignal(mpName, resolution.requestedScope);
+  // SCOPE-01: a container one scope over means nothing is installed HERE, so
+  // the row's subject is the plugin, not the marketplace.
+  const notInstalledAt =
+    target.kind === "plugin"
+      ? await missIsNotInstalled({ cwd, marketplace: mpName, resolution })
+      : undefined;
+  throw new MarketplaceNotAddedSignal(
+    mpName,
+    resolution.requestedScope,
+    notInstalledAt === undefined || target.kind !== "plugin"
+      ? undefined
+      : { scope: notInstalledAt, plugin: target.plugin },
+  );
 }
 
 async function loadCachedMarketplaceManifest(

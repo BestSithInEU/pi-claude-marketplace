@@ -106,6 +106,7 @@ import {
 import {
   assertNoCrossPluginConflicts,
   MarketplaceNotAddedSignal,
+  missIsNotInstalled,
   maybeWritePluginConfigBack,
   removePluginRecord,
   resolveCrossScopePluginTarget,
@@ -567,6 +568,29 @@ async function handleEnumerationFailure(
   const { ctx, pi, cwd } = opts;
 
   if (err instanceof MarketplaceNotAddedSignal) {
+    // SCOPE-01: the container sits one scope over, so nothing is installed at
+    // the scope the operator named. The PLUGIN is the subject -- the same
+    // `(skipped) {not installed}` row an in-scope marketplace with no record
+    // yields, because that is the identical underlying fact.
+    if (err.notInstalledAt !== undefined && err.plugin !== undefined) {
+      notifyWithContext(ctx, pi, REINSTALL_CONTEXT, [
+        {
+          name: err.marketplace,
+          scope: err.notInstalledAt,
+          plugins: [
+            {
+              status: "skipped",
+              name: err.plugin,
+              reasons: ["not installed"],
+              severity: "warning",
+              needsReload: false,
+            },
+          ],
+        },
+      ]);
+      return;
+    }
+
     notify(ctx, pi, {
       kind: "marketplace-not-added",
       name: err.marketplace,
@@ -714,7 +738,14 @@ async function resolveMarketplaceReinstallScope(
     // bracket reads "not added in the scope you asked for"; the bare form that
     // missed everywhere carries no bracket (resolution.requestedScope is
     // undefined there).
-    throw new MarketplaceNotAddedSignal(marketplace, resolution.requestedScope);
+    // SCOPE-01: a container one scope over means nothing is installed HERE,
+    // so the row's subject is the plugin, not the marketplace.
+    const notInstalledAt = await missIsNotInstalled({ cwd, marketplace, resolution });
+    throw new MarketplaceNotAddedSignal(
+      marketplace,
+      resolution.requestedScope,
+      notInstalledAt === undefined ? undefined : { scope: notInstalledAt, plugin: target.plugin },
+    );
   }
 
   // MARKETPLACE form.

@@ -30,7 +30,7 @@ import {
   MarketplaceNotFoundError,
 } from "../../shared/errors.ts";
 import { notify } from "../../shared/notify.ts";
-import { crossScopeFlag } from "../marketplace/shared.ts";
+import { crossScopeFlag, marketplaceInOtherScope } from "../marketplace/shared.ts";
 
 import type { PluginEntry } from "../../domain/components/plugin.ts";
 import type { MaterializablePlugin } from "../../domain/resolver.ts";
@@ -216,12 +216,31 @@ export type CrossScopePluginResolution =
 export class MarketplaceNotAddedSignal extends Error {
   readonly marketplace: string;
   readonly requestedScope?: Scope;
-  constructor(marketplace: string, requestedScope?: Scope) {
+  /**
+   * SCOPE-01: set when the miss is really "nothing is installed at the scope
+   * you named" -- see `missIsNotInstalled`. The handler then renders the
+   * PLUGIN row `(skipped|failed) {not installed}` instead of the marketplace
+   * row, because the container's registration scope is not what the operator
+   * asked about. Carries the plugin so the row has a subject; both fields are
+   * set together or not at all.
+   */
+  readonly notInstalledAt?: Scope;
+  readonly plugin?: string;
+  constructor(
+    marketplace: string,
+    requestedScope?: Scope,
+    notInstalled?: { readonly scope: Scope; readonly plugin: string },
+  ) {
     super(`Marketplace "${marketplace}" not added.`);
     this.name = "MarketplaceNotAddedSignal";
     this.marketplace = marketplace;
     if (requestedScope !== undefined) {
       this.requestedScope = requestedScope;
+    }
+
+    if (notInstalled !== undefined) {
+      this.notInstalledAt = notInstalled.scope;
+      this.plugin = notInstalled.plugin;
     }
   }
 }
@@ -301,6 +320,48 @@ export async function resolveCrossScopePluginTarget(opts: {
   }
 
   return { kind: "marketplace-absent" };
+}
+
+/**
+ * SCOPE-01: does this miss mean "nothing is installed at the scope you named"
+ * rather than "no such marketplace"? Returns the requested scope when so, and
+ * `undefined` when the marketplace row is the truthful complaint.
+ *
+ * The lifecycle verbs -- uninstall / enable / disable -- act on an INSTALL
+ * RECORD, so a container registered one scope over is not what the operator
+ * asked about, and telling them to add the marketplace would not make the
+ * command succeed. Two resolutions mean the same thing to them:
+ *   - `other-scope`  -- the plugin is installed, just not here.
+ *   - `marketplace-absent` where the container is registered in the other
+ *     scope -- nothing is installed here either.
+ *
+ * A marketplace absent from BOTH scopes keeps the marketplace row on purpose:
+ * a typo'd marketplace name would otherwise read as a plugin that is merely
+ * not installed, hiding the real mistake.
+ *
+ * The bare (no `--scope`) form never qualifies -- it consulted both scopes
+ * already, and its `marketplace-absent` carries no `requestedScope`.
+ */
+export async function missIsNotInstalled(opts: {
+  readonly cwd: string;
+  readonly marketplace: string;
+  readonly resolution: CrossScopePluginResolution;
+}): Promise<Scope | undefined> {
+  const { resolution } = opts;
+  if (resolution.kind === "other-scope") {
+    return resolution.requestedScope;
+  }
+
+  if (resolution.kind !== "marketplace-absent" || resolution.requestedScope === undefined) {
+    return undefined;
+  }
+
+  const elsewhere = await marketplaceInOtherScope({
+    cwd: opts.cwd,
+    marketplace: opts.marketplace,
+    scope: resolution.requestedScope,
+  });
+  return elsewhere ? resolution.requestedScope : undefined;
 }
 
 /**

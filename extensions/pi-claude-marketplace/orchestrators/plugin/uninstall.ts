@@ -57,6 +57,7 @@ import { garbageCollectPluginClones } from "./clone-gc.ts";
 import {
   applyPartialCascadeFold,
   emitMarketplaceNotAdded,
+  missIsNotInstalled,
   resolveCrossScopePluginTarget,
 } from "./shared.ts";
 import { UNINSTALL_CONTEXT } from "./uninstall.messaging.ts";
@@ -499,7 +500,27 @@ export async function uninstallPlugin(
     ...(opts.scope !== undefined && { explicitScope: opts.scope }),
   });
 
-  if (resolution.kind === "marketplace-absent" || resolution.kind === "other-scope") {
+  // SCOPE-01: the two misses make DIFFERENT claims and must not share a row.
+  // `other-scope` means the marketplace exists, just not at the requested
+  // scope -- so no install record can exist there either, and the truthful
+  // complaint is about the PLUGIN, not the container. Telling the operator to
+  // add the marketplace would not make this uninstall succeed. `install`
+  // reaches a user-scope marketplace from a project target through the CMP-3
+  // fallback; uninstall deliberately does not follow it, because uninstalling
+  // a record in a scope the operator did not name is not a safe guess.
+  if (resolution.kind !== "resolved") {
+    const notInstalledAt = await missIsNotInstalled({ cwd, marketplace, resolution });
+    if (notInstalledAt !== undefined) {
+      return emitAlreadyGone({
+        ctx,
+        pi,
+        marketplace,
+        scope: notInstalledAt,
+        plugin,
+        orchestrated,
+      });
+    }
+
     return await emitMarketplaceNotAdded({
       ctx,
       pi,

@@ -86,6 +86,7 @@ import { runInstallLedger } from "./install.ts";
 import {
   applyPartialCascadeFold,
   emitMarketplaceNotAdded,
+  missIsNotInstalled,
   enableRowDependencies,
   resolveCrossScopePluginTarget,
   selectDeclaringConfigWriteTarget,
@@ -94,6 +95,7 @@ import {
 
 import type { InstallFailureCapture } from "./install.ts";
 import type { DeclaringConfigWriteTarget, LedgerDegradationSignals } from "./shared.ts";
+import type { CrossScopePluginResolution } from "./shared.ts";
 import type { ScopedLocations } from "../../persistence/locations.ts";
 import type { DisabledPluginRecord, ExtensionState } from "../../persistence/state-io.ts";
 import type { ExtensionAPI, ExtensionContext, SoftDepStatus } from "../../platform/pi-api.ts";
@@ -522,6 +524,59 @@ async function resolveIdempotentOutcome(
 }
 
 /**
+ * SCOPE-01: render the miss for a target that did not resolve. Extracted from
+ * `setPluginEnabled` so its cognitive complexity stays under the ceiling.
+ *
+ * Two claims, two rows. When the container sits one scope over, nothing is
+ * installed at the scope the operator named, so the PLUGIN is the subject and
+ * the row is the same `(skipped) {not installed}` an in-scope marketplace with
+ * no record yields. When the container is absent from BOTH scopes the
+ * marketplace row stands, so a typo'd marketplace name is not disguised as a
+ * plugin that merely is not installed.
+ */
+async function emitUnresolvedTarget(args: {
+  readonly ctx: ExtensionContext;
+  readonly pi: ExtensionAPI;
+  readonly cwd: string;
+  readonly marketplace: string;
+  readonly plugin: string;
+  readonly enable: boolean;
+  readonly orchestrated: boolean;
+  readonly resolution: Exclude<CrossScopePluginResolution, { kind: "resolved" }>;
+}): Promise<EnableDisablePluginOutcome | undefined> {
+  const { ctx, pi, cwd, marketplace, plugin, enable, orchestrated, resolution } = args;
+
+  const notInstalledAt = await missIsNotInstalled({ cwd, marketplace, resolution });
+  if (notInstalledAt === undefined) {
+    return await emitMarketplaceNotAdded({
+      ctx,
+      pi,
+      cwd,
+      marketplace,
+      requestedScope: resolution.requestedScope,
+      orchestrated,
+    });
+  }
+
+  if (orchestrated) {
+    return { status: "skipped", name: plugin, reason: "not installed" };
+  }
+
+  dispatchOutcome({
+    ctx,
+    pi,
+    marketplace,
+    scope: notInstalledAt,
+    plugin,
+    enable,
+    // Only the `invalid-config` arm reads this, and `not-recorded` is not it.
+    configBasename: "",
+    outcome: { kind: "not-recorded" },
+  });
+  return undefined;
+}
+
+/**
  * D-54-01 entrypoint. Never re-throws -- every failure surfaces through a
  * single `notify()` call per IL-2 (standalone) OR a typed outcome per
  * RECON-03 (orchestrated).
@@ -542,6 +597,7 @@ export function setPluginEnabled(
 export function setPluginEnabled(
   opts: EnableDisablePluginOptions,
 ): Promise<EnableDisablePluginOutcome | undefined>;
+
 export async function setPluginEnabled(
   opts: EnableDisablePluginOptions,
 ): Promise<EnableDisablePluginOutcome | undefined> {
@@ -575,14 +631,23 @@ export async function setPluginEnabled(
     });
   }
 
-  if (resolution.kind === "marketplace-absent" || resolution.kind === "other-scope") {
-    return await emitMarketplaceNotAdded({
+  // SCOPE-01: the two misses make DIFFERENT claims and must not share a row.
+  // `other-scope` means the marketplace exists, just not at the requested
+  // scope -- so no install record can exist there either, and the truthful
+  // complaint is about the PLUGIN. It renders the SAME `(skipped)
+  // {not installed}` row an in-scope marketplace with no plugin record yields
+  // (`not-recorded`), because that is the identical underlying fact: nothing
+  // is installed at the scope the operator named.
+  if (resolution.kind !== "resolved") {
+    return await emitUnresolvedTarget({
       ctx,
       pi,
       cwd,
       marketplace,
-      requestedScope: resolution.requestedScope,
+      plugin,
+      enable,
       orchestrated,
+      resolution,
     });
   }
 

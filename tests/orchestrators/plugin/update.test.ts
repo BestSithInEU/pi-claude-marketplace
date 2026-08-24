@@ -1746,7 +1746,7 @@ test("SCOPE-01 @<mp>: marketplace present only in other scope -> scope-qualified
 // returning the explicit scope blindly, then `enumerateMarketplaceTarget`
 // finding `mp === undefined` for that scope and raising the signal -- the
 // companion of the `@<mp>` form test above (WR-01 gap closure).
-test("SCOPE-01 <plugin>@<mp>: marketplace present only in other scope -> scope-qualified not-added row [requestedScope]", async () => {
+test("SCOPE-01 <plugin>@<mp>: marketplace present only in other scope -> (skipped) {not installed}", async () => {
   await withHermeticHome(async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "update-scope01-plugin-other-"));
     try {
@@ -1769,10 +1769,10 @@ test("SCOPE-01 <plugin>@<mp>: marketplace present only in other scope -> scope-q
       });
 
       assert.equal(notifications.length, 1);
-      assert.equal(notifications[0]?.severity, "error");
+      assert.equal(notifications[0]?.severity, "warning");
       assert.equal(
         notifications[0]?.message,
-        "A marketplace operation has failed.\n\n⊘ mp [user] (failed) {marketplace not added to user scope}",
+        "A plugin operation needs attention.\n\n● mp [user]\n  ⊘ hello (skipped) {not installed}",
       );
     } finally {
       await rm(cwd, { recursive: true, force: true });
