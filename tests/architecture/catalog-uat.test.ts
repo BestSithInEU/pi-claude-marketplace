@@ -1360,10 +1360,10 @@ const FIXTURES: FixtureMap = {
     },
 
     // CMP-4 / SCOPE-01: the container exists in the scope the install did not
-    // target, so the row carries the remedy trailer. The message field is a
-    // BOOLEAN -- notify.ts composes every byte below, including both scope
-    // labels and the marketplace name. The bare-row state above is the SAME
-    // variant with the flag omitted, which is what a miss in both scopes emits.
+    // target, so the brace carries the cross-scope structural token INSTEAD of
+    // `marketplace not added`. The message field is a BOOLEAN -- notify.ts owns the bytes.
+    // The bare-row state above is the SAME variant with the flag omitted, which
+    // is what a miss in both scopes emits.
     "missing-marketplace-not-added-cross-scope": {
       pi: piWithBothLoaded(),
       expectedSeverity: "error",
@@ -1371,6 +1371,20 @@ const FIXTURES: FixtureMap = {
         kind: "marketplace-not-added",
         name: "mp",
         scope: "user",
+        presentInOtherScope: true,
+      } satisfies NotificationMessage,
+    },
+
+    // The project-target direction of the same claim. Unreachable from
+    // `install` (the CMP-3 fallback adopts a user-scope marketplace into
+    // project scope) but reachable from every other verb that renders this row.
+    "missing-marketplace-not-added-cross-scope-project": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "error",
+      message: {
+        kind: "marketplace-not-added",
+        name: "mp",
+        scope: "project",
         presentInOtherScope: true,
       } satisfies NotificationMessage,
     },
@@ -2961,7 +2975,7 @@ const FIXTURES: FixtureMap = {
   //     * scope-mismatch-not-added       (anchor; byte-identical)
   //
   // Severity routing: every success + fan-out state is `info` (omits
-  // `expectedSeverity`); the two `{not added}` failure states route to
+  // `expectedSeverity`); the two `{marketplace not added}` failure states route to
   // `"error"`. The `scope-mismatch-not-added` fixture
   // (annotation, fence body, payload, severity) is
   // byte-identical.
@@ -3076,14 +3090,14 @@ const FIXTURES: FixtureMap = {
       // TYPE-01: the dedicated `marketplace-not-added` variant. `scope` is
       // OMITTED so the renderer emits no `[scope]` token -- absent-from-both
       // states have no bracket because the marketplace is in NEITHER scope.
-      // Byte form is unchanged (`⊘ ghost-mp (failed) {not added}`).
+      // Byte form is unchanged (`⊘ ghost-mp (failed) {marketplace not added}`).
       message: {
         kind: "marketplace-not-added",
         name: "ghost-mp",
       } satisfies NotificationMessage,
     },
 
-    // Byte form preserved byte-identical (`⊘ my-mp [user] (failed) {not added}`).
+    // Byte form preserved byte-identical (`⊘ my-mp [user] (failed) {marketplace not added}`).
     // The fixture shape is re-keyed to the TYPE-01 variant; the rendered BYTES
     // are unchanged.
     "scope-mismatch-not-added": {
@@ -3149,11 +3163,11 @@ const FIXTURES: FixtureMap = {
   //     * components-not-resolved                      (external-source marker)
   //   - Failure states:
   //     * missing-plugin-not-in-manifest               ({not in manifest})
-  //     * missing-marketplace-not-added-absent-from-both  ({not added}, no [scope])
-  //     * missing-marketplace-not-added-scope-mismatch    ({not added}, with [scope])
+  //     * missing-marketplace-not-added-absent-from-both  ({marketplace not added}, no [scope])
+  //     * missing-marketplace-not-added-scope-mismatch    ({marketplace not added}, with [scope])
   //
   // Severity routing: every success + fan-out + components-not-resolved
-  // state is `info` (omits `expectedSeverity`); the three `{not added}` /
+  // state is `info` (omits `expectedSeverity`); the three `{marketplace not added}` /
   // `{not in manifest}` failure states route to `"error"`; the three D-96-04
   // fetch-skip notes are the only `"warning"` states on this surface.
   // -------------------------------------------------------------------------
@@ -3615,7 +3629,7 @@ const FIXTURES: FixtureMap = {
       expectedSeverity: "error",
       // TYPE-01 variant. `name` carries the MARKETPLACE name (the user-facing
       // failure is "the marketplace is not added"). `scope` OMITTED -> no
-      // bracket. Byte form unchanged (`⊘ ghost-mp (failed) {not added}`).
+      // bracket. Byte form unchanged (`⊘ ghost-mp (failed) {marketplace not added}`).
       message: {
         kind: "marketplace-not-added",
         name: "ghost-mp",
@@ -3627,7 +3641,7 @@ const FIXTURES: FixtureMap = {
       expectedSeverity: "error",
       // TYPE-01 variant. `--scope user` requested explicitly -> renderer emits
       // the `[user]` bracket. Byte form unchanged
-      // (`⊘ ghost-mp [user] (failed) {not added}`).
+      // (`⊘ ghost-mp [user] (failed) {marketplace not added}`).
       message: {
         kind: "marketplace-not-added",
         name: "ghost-mp",
@@ -3683,7 +3697,7 @@ const FIXTURES: FixtureMap = {
     },
 
     // ATTR-06 / S3 / D-48-C Shape 1: explicit-scope remove of a name not added
-    // in the requested scope -> standalone `marketplace-not-added` `{not added}`
+    // in the requested scope -> standalone `marketplace-not-added` `{marketplace not added}`
     // variant carrying the requested scope bracket (pre-guard miss; no raw
     // MarketplaceNotFoundError escapes the orchestrator).
     "remove-missing-not-added": {
@@ -4057,7 +4071,7 @@ const FIXTURES: FixtureMap = {
 
     // ATTR-05 / S1 / D-48-C Shape 1: an explicit-scope flip of a name not
     // added in the requested scope routes to the standalone
-    // `marketplace-not-added` `{not added}` variant carrying the requested
+    // `marketplace-not-added` `{marketplace not added}` variant carrying the requested
     // scope bracket -- superseding the former reason-less / `{not found}` form.
     "autoupdate-missing-not-added": {
       pi: piWithBothLoaded(),
@@ -5040,14 +5054,14 @@ test("catalog UAT: every <!-- catalog-state: --> annotation pairs byte-equal wit
   const catalog = await readFile(CATALOG_PATH, "utf8");
   const examples = loadCatalogExamples(catalog);
 
-  // Exact count, not a floor: 174 is the number of annotated examples in
+  // Exact count, not a floor: 175 is the number of annotated examples in
   // docs/output-catalog.md, and it is what stops a `loadCatalogExamples`
   // refactor from silently parsing a fraction of the corpus. Update it
   // deliberately when catalog examples are added or removed.
   assert.equal(
     examples.length,
-    174,
-    `Expected exactly 174 annotated catalog examples; found ${examples.length}. Check that the discriminator comments in docs/output-catalog.md were not lost, and update this count when examples are added.`,
+    175,
+    `Expected exactly 175 annotated catalog examples; found ${examples.length}. Check that the discriminator comments in docs/output-catalog.md were not lost, and update this count when examples are added.`,
   );
 
   const failures: Failure[] = [];

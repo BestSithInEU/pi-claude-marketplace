@@ -499,7 +499,7 @@ export async function resolveScopeFromState(
  * Returns the resolved `{ scope, locations }` when the marketplace record
  * exists in the target scope. Returns `undefined` when the marketplace is
  * absent -- in which case it has ALREADY emitted the standalone
- * MarketplaceNotAddedMessage `(failed) {not added}` variant (SC#1 cross-op
+ * MarketplaceNotAddedMessage `(failed) {marketplace not added}` variant (SC#1 cross-op
  * convergence), so the caller must return without entering the guard (no raw
  * MarketplaceNotFoundError escapes past the orchestrator boundary, state
  * untouched). NFR-5: every read here is a network-free `loadState`.
@@ -540,10 +540,13 @@ export async function resolveScopeOrNotifyNotAdded(
   const locations = opts.scope === "user" ? userLocations : projectLocations;
   const preState = await loadState(locations.extensionRoot);
   if (preState.marketplaces[opts.name] === undefined) {
+    const otherLocations = opts.scope === "user" ? projectLocations : userLocations;
+    const elsewhere = await marketplaceRecordedIn(otherLocations, opts.name);
     notify(opts.ctx, opts.pi, {
       kind: "marketplace-not-added",
       name: opts.name,
       scope: opts.scope,
+      ...(elsewhere && { presentInOtherScope: true }),
     });
     return undefined;
   }
@@ -649,4 +652,82 @@ export function narrowCascadeFailure(cause: Error): ContentReason {
   }
 
   return "not in manifest";
+}
+
+/**
+ * CMP-4 / SCOPE-01: does a `marketplace-absent` row deserve the qualified
+ * cross-scope reason token -- i.e. is the marketplace CONTAINER registered in
+ * the scope the command did not target?
+ *
+ * Shared by every verb that renders `MarketplaceNotAddedMessage` with an
+ * explicit scope. Call it ONLY when a single scope was consulted: an absent
+ * `[scope]` bracket means both scopes were already checked and both missed
+ * (D-03), so there is no other scope left to probe.
+ *
+ * Both directions are live. A user target probes project; a project target
+ * probes user. For `install` specifically the project direction always answers
+ * `false` -- `resolveInstallMarketplaceSource` has already consulted user
+ * scope through the CMP-3 fallback before the absent arm is reached -- but the
+ * read is harmless there and other verbs carry no such fallback.
+ *
+ * NEVER throws. The caller sits OUTSIDE the `withLockedStateTransaction`
+ * try/catch and no edge handler catches, so a throw here would replace a clean
+ * `{marketplace not added}` failure row with an unhandled rejection and NO `ctx.ui.notify`
+ * call at all (IL-2). `loadState` throws on malformed JSON, schema violation
+ * and any non-ENOENT read error, and a project `state.json` we are not
+ * installing into is exactly the file most likely to be broken or unreadable.
+ * The cross-scope claim is advisory; losing it is a strictly better outcome
+ * than losing the failure row, so an unreadable other scope degrades to the
+ * plain `{marketplace not added}` token.
+ *
+ * Read-only, no network (NFR-5), no mutation.
+ */
+export async function marketplaceInOtherScope(opts: {
+  readonly cwd: string;
+  readonly marketplace: string;
+  readonly scope: Scope;
+}): Promise<boolean> {
+  const other: Scope = opts.scope === "user" ? "project" : "user";
+  return await marketplaceRecordedIn(locationsFor(other, opts.cwd), opts.marketplace);
+}
+
+/**
+ * CMP-4 / SCOPE-01: is `name` recorded in the state file under `locations`?
+ *
+ * NEVER throws -- see `marketplaceInOtherScope`. `false` on any read failure,
+ * which degrades the row to the plain `{marketplace not added}` token rather
+ * than taking the failure row down with it.
+ */
+async function marketplaceRecordedIn(locations: ScopedLocations, name: string): Promise<boolean> {
+  try {
+    const state = await loadState(locations.extensionRoot);
+    return state.marketplaces[name] !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * CMP-4 / SCOPE-01: the spreadable `presentInOtherScope` fragment every
+ * `MarketplaceNotAddedMessage` construction site folds into its message.
+ *
+ * Returns an EMPTY object when no single scope was consulted. An absent
+ * `[scope]` bracket means both scopes already missed (D-03), so no probe is
+ * owed and none is performed.
+ */
+export async function crossScopeFlag(opts: {
+  readonly cwd: string;
+  readonly marketplace: string;
+  readonly scope: Scope | undefined;
+}): Promise<{ readonly presentInOtherScope?: true }> {
+  if (opts.scope === undefined) {
+    return {};
+  }
+
+  const elsewhere = await marketplaceInOtherScope({
+    cwd: opts.cwd,
+    marketplace: opts.marketplace,
+    scope: opts.scope,
+  });
+  return elsewhere ? { presentInOtherScope: true } : {};
 }

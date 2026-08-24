@@ -93,16 +93,28 @@ const FIXTURES: readonly GrammarFixture[] = [
     },
   },
   {
-    // CMP-4 / SCOPE-01: the remedy-trailered arm adds a THIRD block below the
-    // detail row. The summary must still be the first line and still be
-    // distinct from the detail block -- a trailer that carried its own leading
-    // newline, or that was prepended rather than appended, would trip here.
-    label: "standalone marketplace-not-added carrying the cross-scope remedy trailer",
+    // CMP-4 / SCOPE-01: the cross-scope arm stays a TWO-block surface -- the
+    // structural token rides the detail row's brace, so no third block is
+    // introduced. The summary must still be the first line and still be
+    // distinct from the detail block.
+    label: "standalone marketplace-not-added carrying the cross-scope reason token",
     pi: piWithBothLoaded(),
     message: {
       kind: "marketplace-not-added",
       name: "mp",
       scope: "user",
+      presentInOtherScope: true,
+    },
+  },
+  {
+    // The project-target direction: the baked-in scope word must track the
+    // bracket, never contradict it.
+    label: "standalone marketplace-not-added carrying the project-direction token",
+    pi: piWithBothLoaded(),
+    message: {
+      kind: "marketplace-not-added",
+      name: "mp",
+      scope: "project",
       presentInOtherScope: true,
     },
   },

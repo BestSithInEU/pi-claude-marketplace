@@ -1836,7 +1836,10 @@ test("Marketplace not added: explicit --scope emits standalone marketplace-not-a
     });
     assert.equal(notifications.length, 1);
     assert.equal(notifications[0]!.severity, "error");
-    assert.match(notifications[0]!.message, /⊘ ghost-mp \[user\] \(failed\) \{not added\}/);
+    assert.match(
+      notifications[0]!.message,
+      /⊘ ghost-mp \[user\] \(failed\) \{marketplace not added\}/,
+    );
   });
 });
 
@@ -1962,7 +1965,7 @@ test("RECON-03 enable-disable orchestrated mode -- idempotent enable-already-ena
   });
 });
 
-test("RECON-03 enable-disable orchestrated mode -- missing marketplace returns { status: 'failed', reason: 'not added' } no notifications", async () => {
+test("RECON-03 enable-disable orchestrated mode -- missing marketplace returns { status: 'failed', reason: 'marketplace not added' } no notifications", async () => {
   await withHermeticHome(async ({ cwd }) => {
     const { ctx, notifications } = makeCtx(cwd);
     const outcome = await setPluginEnabled({
@@ -1980,7 +1983,7 @@ test("RECON-03 enable-disable orchestrated mode -- missing marketplace returns {
     assert.ok(outcome);
     assert.equal(outcome.status, "failed");
     if (outcome.status === "failed") {
-      assert.equal(outcome.reason, "not added");
+      assert.equal(outcome.reason, "marketplace not added");
       assert.ok(outcome.error instanceof MarketplaceNotFoundError);
     }
   });
@@ -2000,7 +2003,10 @@ test("RECON-03 enable-disable standalone-default mode -- omitted notifications o
     });
     assert.equal(outcome, undefined, "standalone (omitted) returns undefined");
     assert.equal(notifications.length, 1);
-    assert.match(notifications[0]!.message, /⊘ ghost-mp-byte \[user\] \(failed\) \{not added\}/);
+    assert.match(
+      notifications[0]!.message,
+      /⊘ ghost-mp-byte \[user\] \(failed\) \{marketplace not added\}/,
+    );
   });
 });
 

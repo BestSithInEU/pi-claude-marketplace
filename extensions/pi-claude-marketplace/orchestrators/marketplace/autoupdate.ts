@@ -77,6 +77,7 @@ import { withLockedStateTransaction } from "../../transaction/with-state-guard.t
 
 import { AUTOUPDATE_CONTEXT, NOAUTOUPDATE_CONTEXT } from "./autoupdate.messaging.ts";
 import { classifyAutoupdateFlip } from "./shared.ts";
+import { crossScopeFlag } from "./shared.ts";
 
 import type { MarketplaceConfigEntry, ScopeConfig } from "../../persistence/config-io.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../platform/pi-api.ts";
@@ -167,7 +168,7 @@ function missingEverywhere(
  *
  * ATTR-05: this row no longer handles the missing-marketplace case -- an
  * explicit-scope `MarketplaceNotFoundError` is routed to the standalone
- * `MarketplaceNotAddedMessage` `{not added}` variant by `setMarketplaceAutoupdate`
+ * `MarketplaceNotAddedMessage` `{marketplace not added}` variant by `setMarketplaceAutoupdate`
  * BEFORE this helper is reached. This helper now only maps `StateLockHeldError`
  * (-> `lock held`, whose message carries the retry hint) and other non-not-found
  * flip errors (-> the permissive `not found` fallback).
@@ -200,7 +201,7 @@ function flipContextFor(enable: boolean): typeof AUTOUPDATE_CONTEXT | typeof NOA
  *
  * ATTR-05 / D-48-C Shape 1: an explicit-scope `MarketplaceNotFoundError` is a
  * missing-marketplace precondition, NOT a flip failure -- it routes to the
- * standalone MarketplaceNotAddedMessage `⊘ <name> [<scope>] (failed) {not added}`
+ * standalone MarketplaceNotAddedMessage `⊘ <name> [<scope>] (failed) {marketplace not added}`
  * variant carrying the explicit scope bracket (the former
  * synthetic-child `{not found}` reason lied about the blocker). Every OTHER
  * error -- notably `StateLockHeldError`, whose message carries an actionable
@@ -208,7 +209,11 @@ function flipContextFor(enable: boolean): typeof AUTOUPDATE_CONTEXT | typeof NOA
  * renderer's depth-5 cause-chain trailer (the MarketplaceNotificationMessage
  * header carries no `cause` per SNM-10).
  */
-function notifyAutoupdateScopeFailure(opts: AutoupdateOptions, scope: Scope, err: unknown): void {
+async function notifyAutoupdateScopeFailure(
+  opts: AutoupdateOptions,
+  scope: Scope,
+  err: unknown,
+): Promise<void> {
   const failureName = opts.name ?? "(unknown)";
 
   if (err instanceof MarketplaceNotFoundError) {
@@ -216,6 +221,7 @@ function notifyAutoupdateScopeFailure(opts: AutoupdateOptions, scope: Scope, err
       kind: "marketplace-not-added",
       name: failureName,
       scope,
+      ...(await crossScopeFlag({ cwd: opts.cwd, marketplace: failureName, scope })),
     });
     return;
   }
@@ -505,7 +511,7 @@ export async function setMarketplaceAutoupdate(opts: AutoupdateOptions): Promise
       // the OTHER scope, so it is collected and surfaced only if BOTH scopes
       // failed AND no flip happened anywhere.
       if (!shouldCollectNotFound(opts, err)) {
-        notifyAutoupdateScopeFailure(opts, scope, err);
+        await notifyAutoupdateScopeFailure(opts, scope, err);
         return;
       }
 
@@ -521,16 +527,22 @@ export async function setMarketplaceAutoupdate(opts: AutoupdateOptions): Promise
     if (first !== undefined) {
       // ATTR-05 / D-48-C Shape 1: a single-name flip that missed in EVERY
       // iterated scope is a missing-marketplace precondition. Route it to the
-      // standalone MarketplaceNotAddedMessage `(failed) {not added}` variant
+      // standalone MarketplaceNotAddedMessage `(failed) {marketplace not added}` variant
       // instead of the former reason-LESS bare `(failed)` row.
       // Scope bracket: an explicit `opts.scope` carries it; the bare form
       // carries `first.scope` (the scope where the first not-found was
       // observed), per the RESEARCH recommendation.
       const failureName = opts.name ?? "(unknown)";
+      const missScope = opts.scope ?? first.scope;
       notify(opts.ctx, opts.pi, {
         kind: "marketplace-not-added",
         name: failureName,
-        scope: opts.scope ?? first.scope,
+        scope: missScope,
+        ...(await crossScopeFlag({
+          cwd: opts.cwd,
+          marketplace: failureName,
+          scope: missScope,
+        })),
       });
     }
 

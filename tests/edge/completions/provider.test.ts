@@ -647,7 +647,7 @@ test("TC-5 :: marketplace noautoupdate <here> completes with marketplace names",
 // union surface is reused: candidates are the union
 // of marketplace names across BOTH scopes; the `--scope` filter does NOT
 // narrow the completion candidate set (the orchestrator handles scope-
-// mismatch at execution time via the INFO-04 `{not added}` row).
+// mismatch at execution time via the INFO-04 `{marketplace not added}` row).
 
 test("TC-5 :: marketplace info <here> completes with union of marketplace names from both scopes", async () => {
   resetCompletionCache();
@@ -694,7 +694,7 @@ test("TC-5 :: marketplace info --scope project <here> still completes union of m
   const f = await makeFixture({
     // Marketplace lives in USER scope only; with `--scope project` the
     // completion still surfaces the name. The orchestrator handles the
-    // mismatch at execution time via the INFO-04 `{not added}` row.
+    // mismatch at execution time via the INFO-04 `{marketplace not added}` row.
     state: { user: { "mp-a": {} }, project: {} },
     manifests: { user: {}, project: {} },
   });
@@ -1163,7 +1163,7 @@ test("TC-6 :: multi-marketplace plugin yields name@ without trailing space", asy
 // installed + available + unavailable rows from BOTH scopes (no
 // install-state exclusion; scope filter does NOT narrow the candidate
 // set -- the orchestrator handles scope mismatches via the INFO-04
-// `{not added}` row).
+// `{marketplace not added}` row).
 // ---------------------------------------------------------------------------
 
 test("TC-6 / INFO-02 :: info <here> returns union of installed + available + unavailable refs across both scopes", async () => {
@@ -1223,7 +1223,7 @@ test("TC-6 / INFO-02 :: info --scope project <here> returns the SAME union (scop
   // Marketplace lives in USER scope only; with `--scope project` the
   // completion still surfaces every known plugin. The orchestrator
   // handles the mismatch at execution time via the INFO-04
-  // `{not added}` row.
+  // `{marketplace not added}` row.
   const f = await makeFixture({
     state: { user: { mp: {} }, project: {} },
     manifests: {

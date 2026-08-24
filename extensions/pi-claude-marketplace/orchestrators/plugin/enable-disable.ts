@@ -135,7 +135,7 @@ export type EnableDegradationSignals = LedgerDegradationSignals;
  *   standalone rendering token set.
  * - `"failed"` -- enable / disable / not-recorded / invalid-config /
  *   marketplace-not-added paths. `reason` typed `Reason` so the
- *   structural `"not added"` sentinel can flow through the same field.
+ *   structural `"marketplace not added"` sentinel can flow through the same field.
  */
 export type EnableDisablePluginOutcome =
   | ({
@@ -576,9 +576,10 @@ export async function setPluginEnabled(
   }
 
   if (resolution.kind === "marketplace-absent" || resolution.kind === "other-scope") {
-    return emitMarketplaceNotAdded({
+    return await emitMarketplaceNotAdded({
       ctx,
       pi,
+      cwd,
       marketplace,
       requestedScope: resolution.requestedScope,
       orchestrated,
@@ -781,7 +782,7 @@ function emitResolutionFailure(args: {
   const sanitized = sanitizeStateLoadError(cause);
   // classifyTransactionThrow returns a `Reason` (closed set including
   // "lock held"); none of the narrower outputs are the structural
-  // "not added" sentinel, so a ContentReason cast is sound here.
+  // "marketplace not added" sentinel, so a ContentReason cast is sound here.
   const reason: ContentReason = classifyTransactionThrow(sanitized) as ContentReason;
   if (orchestrated) {
     return {

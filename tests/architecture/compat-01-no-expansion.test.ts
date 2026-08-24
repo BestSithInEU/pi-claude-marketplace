@@ -158,7 +158,14 @@ test("COMPAT-01: REASONS holds exactly its inherited members, in order", () => {
       "permission denied",
       "source missing",
       "network unreachable",
-      "not added",
+      "marketplace not added",
+      // CMP-4 / SCOPE-01, post-COMPAT-01: the second STRUCTURAL
+      // marketplace-absent marker. COMPAT-01 promised the manifest-independent
+      // lifecycle work added no reason token, and it did not; this member
+      // belongs to the later cross-scope install work and is amended in
+      // deliberately, which is exactly what this enumeration gate is for.
+      "marketplace not added to user scope",
+      "marketplace not added to project scope",
       "orphan rewake",
       "authentication required",
       "dangling reference",

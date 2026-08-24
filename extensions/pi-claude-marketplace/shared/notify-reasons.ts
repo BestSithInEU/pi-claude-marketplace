@@ -29,7 +29,7 @@ import type { SoftDepStatus } from "../platform/pi-api.ts";
  * tuples. Membership of every literal is checked at compile time against the
  * closed `Reason` set (each group's element type extends `Reason`), and the
  * `_ReasonsCoverageProof` at the bottom asserts the union of all groups + the
- * command-private reasons + the structural `"not added"` marker is EXACTLY the
+ * command-private reasons + the structural `"marketplace not added"` marker is EXACTLY the
  * closed set -- a literal added to `REASONS` without a home here, or a typo,
  * becomes a compile error.
  */
@@ -220,7 +220,7 @@ export function malformedReasonsForKinds(
  * `marketplace add`, `not found` / `not installed` for `uninstall`,
  * `plugins remain` for `marketplace remove`, `orphan rewake` for `install`)
  * are NOT declared here -- they belong to the owning command's module. The
- * structural `"not added"` marketplace-absent marker is likewise not a shared
+ * structural `"marketplace not added"` marketplace-absent marker is likewise not a shared
  * topic reason (it is excluded from `ContentReason` in `notify.ts`).
  */
 type SharedTopicReason = IdempotentReason | UnsupportedReason | FailureReason | DeclaredStateReason;
@@ -228,9 +228,10 @@ type SharedTopicReason = IdempotentReason | UnsupportedReason | FailureReason | 
 /**
  * D-09: the command-private reasons, named here ONLY for the completeness
  * proof below -- they are owned by their command modules, not exported as a
- * shared group. `"not added"` is the structural marketplace-absent marker
- * (excluded from `ContentReason` in `notify.ts`); it is included here solely so
- * the coverage proof sees the full closed set.
+ * shared group. `"marketplace not added"` and its two scope-qualified siblings are the three
+ * structural marketplace-absent markers (all excluded from `ContentReason` in
+ * `notify.ts`); they are included here solely so the coverage proof sees the
+ * full closed set.
  */
 type CommandPrivateReason =
   | "not found"
@@ -238,7 +239,9 @@ type CommandPrivateReason =
   | "plugins remain"
   | "stale clone"
   | "duplicate name"
-  | "not added"
+  | "marketplace not added"
+  | "marketplace not added to user scope"
+  | "marketplace not added to project scope"
   | "orphan rewake";
 
 /**

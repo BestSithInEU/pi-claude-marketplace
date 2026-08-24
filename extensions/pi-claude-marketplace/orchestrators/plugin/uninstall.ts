@@ -103,7 +103,7 @@ export type UninstallPluginNotifications =
  * is NOT a reliable converge discriminator, hence the explicit variant.
  *
  * `reason` is typed as `Reason` (broader than `ContentReason`) so the
- * structural `"not added"` sentinel returned by the missing-marketplace arm
+ * structural `"marketplace not added"` sentinel returned by the missing-marketplace arm
  * flows through the same field; mirrors `RemoveMarketplaceOutcome`.
  */
 export type UninstallPluginOutcome =
@@ -489,7 +489,7 @@ export async function uninstallPlugin(
   const orchestrated = opts.notifications?.mode === "orchestrated";
 
   // ATTR-04 / SCOPE-01 / M3 / M4: the discriminated cross-scope resolver
-  // distinguishes "marketplace container absent" (loud `{not added}`) from
+  // distinguishes "marketplace container absent" (loud `{marketplace not added}`) from
   // "container present, plugin row absent" (silent PU-5 converge, reached via
   // the `resolved` arm's downstream `installed === undefined` branch).
   const resolution = await resolveCrossScopePluginTarget({
@@ -500,9 +500,10 @@ export async function uninstallPlugin(
   });
 
   if (resolution.kind === "marketplace-absent" || resolution.kind === "other-scope") {
-    return emitMarketplaceNotAdded({
+    return await emitMarketplaceNotAdded({
       ctx,
       pi,
+      cwd,
       marketplace,
       requestedScope: resolution.requestedScope,
       orchestrated,
@@ -552,7 +553,7 @@ export async function uninstallPlugin(
       if (mp === undefined) {
         // ATTR-04 reachability note. The "marketplace never added" case is
         // now caught BEFORE the guard by `resolveCrossScopePluginTarget`
-        // (the `marketplace-absent` / `other-scope` arms emit `{not added}`
+        // (the `marketplace-absent` / `other-scope` arms emit `{marketplace not added}`
         // and return). So a `mp === undefined` HERE is exclusively a
         // CONCURRENT-REMOVAL race: the container existed at the resolver's
         // unlocked read but was removed by another process before this

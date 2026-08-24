@@ -30,6 +30,7 @@ import {
   MarketplaceNotFoundError,
 } from "../../shared/errors.ts";
 import { notify } from "../../shared/notify.ts";
+import { crossScopeFlag } from "../marketplace/shared.ts";
 
 import type { PluginEntry } from "../../domain/components/plugin.ts";
 import type { MaterializablePlugin } from "../../domain/resolver.ts";
@@ -202,13 +203,13 @@ export type CrossScopePluginResolution =
  * agree across orchestrators (a per-file copy would defeat `instanceof` by
  * class identity). The enumeration catch in each entrypoint detects it via
  * `instanceof` and emits ONE standalone `MarketplaceNotAddedMessage`
- * (`{not added}` on the marketplace subject) before any cascade row exists.
+ * (`{marketplace not added}` on the marketplace subject) before any cascade row exists.
  *
  * `requestedScope` carries the explicitly-requested scope so the `[scope]`
  * bracket reads "not added in the scope you asked for" (SCOPE-01); it is
  * OMITTED for the bare form that missed in both scopes (no bracket).
  *
- * Structural (not REASONS): `{not added}` is the hard-coded brace of
+ * Structural (not REASONS): `{marketplace not added}` is the hard-coded brace of
  * `renderMarketplaceNotAdded`, reachable only via the dedicated variant -- no
  * new `REASONS` member is introduced (D-47-B).
  */
@@ -327,48 +328,6 @@ export async function resolveInstallMarketplaceSource(opts: {
   const userState = await loadState(userLocations.extensionRoot);
   const userRecord = userState.marketplaces[opts.marketplace];
   return userRecord === undefined ? undefined : { sourceScope: "user", sourceRecord: userRecord };
-}
-
-/**
- * CMP-4 / SCOPE-01: does the install's `marketplace-absent` row deserve the
- * cross-scope remedy trailer -- i.e. is the marketplace CONTAINER registered in
- * the scope the install did not target?
- *
- * ONLY a user-target install can qualify, and the early return is a
- * correctness statement rather than an optimization. `marketplace-absent`
- * means `resolveInstallMarketplaceSource` returned `undefined`; for a
- * PROJECT target that function has ALREADY consulted user scope through the
- * CMP-3 fallback, so the other scope provably holds no container. Reading it
- * again could only ever answer `false`, and branching on that answer would
- * add an arm no production path can reach.
- *
- * NEVER throws. The caller sits OUTSIDE the `withLockedStateTransaction`
- * try/catch and no edge handler catches, so a throw here would replace a clean
- * `{not added}` failure row with an unhandled rejection and NO `ctx.ui.notify`
- * call at all (IL-2). `loadState` throws on malformed JSON, schema violation
- * and any non-ENOENT read error, and a project `state.json` we are not
- * installing into is exactly the file most likely to be broken or unreadable.
- * The remedy is advisory; losing it is a strictly better outcome than losing
- * the failure row, so an unreadable other scope degrades to "no remedy".
- *
- * Read-only, no network (NFR-5), no mutation.
- */
-export async function crossScopeRemedyApplies(opts: {
-  readonly cwd: string;
-  readonly marketplace: string;
-  readonly scope: Scope;
-}): Promise<boolean> {
-  if (opts.scope !== "user") {
-    return false;
-  }
-
-  try {
-    const otherLocations = locationsFor("project", opts.cwd);
-    const otherState = await loadState(otherLocations.extensionRoot);
-    return otherState.marketplaces[opts.marketplace] !== undefined;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -764,7 +723,7 @@ export async function resolveInstalledPluginTarget(opts: {
  *     unqualified path that missed everywhere (no-bracket form).
  *
  * No raw `MarketplaceNotFoundError` escapes -- the absent case is a structural
- * arm the update entrypoint maps to the standalone `{not added}` emission.
+ * arm the update entrypoint maps to the standalone `{marketplace not added}` emission.
  */
 export type ScopedMarketplaceResolution =
   | { readonly kind: "resolved"; readonly scope: Scope; readonly locations: ScopedLocations }
@@ -775,7 +734,7 @@ export type ScopedMarketplaceResolution =
  * CMP-5: unqualified `@marketplace` update targets project installs before user
  * installs. Returns a discriminated result instead of throwing
  * `MarketplaceNotFoundError` (M11) so the update direct path can emit the
- * standalone `{not added}` variant for the marketplace-existence precondition.
+ * standalone `{marketplace not added}` variant for the marketplace-existence precondition.
  *
  * CMP-5 precedence for the resolved arm is UNCHANGED (project-with-plugins ->
  * user-with-plugins -> project-empty -> user-empty). All reads are `loadState`
@@ -1171,7 +1130,7 @@ export function applyPartialCascadeFold(
  * or recorded only in the sibling scope.
  *
  * RECON-03 / D-47-A: orchestrated callers get the typed failure carrying the
- * structural `not added` sentinel; standalone callers get the canonical
+ * structural `marketplace not added` sentinel; standalone callers get the canonical
  * `MarketplaceNotAddedMessage` row and `undefined`, because the row IS the
  * outcome on that path.
  *
@@ -1181,32 +1140,40 @@ export function applyPartialCascadeFold(
  * `failed` arm both `UninstallPluginOutcome` and `EnableDisablePluginOutcome`
  * already declare, so neither union is widened by sharing it.
  */
-export function emitMarketplaceNotAdded(args: {
+export async function emitMarketplaceNotAdded(args: {
   readonly ctx: ExtensionContext;
   readonly pi: ExtensionAPI;
+  readonly cwd: string;
   readonly marketplace: string;
   readonly requestedScope: Scope | undefined;
   readonly orchestrated: boolean;
-}):
+}): Promise<
   | {
       readonly status: "failed";
-      readonly reason: "not added";
+      readonly reason: "marketplace not added";
       readonly error: Error;
       readonly cause: string;
     }
-  | undefined {
-  const { ctx, pi, marketplace, requestedScope, orchestrated } = args;
+  | undefined
+> {
+  const { ctx, pi, cwd, marketplace, requestedScope, orchestrated } = args;
   if (orchestrated) {
     const scopeList: readonly Scope[] =
       requestedScope === undefined ? ["project", "user"] : [requestedScope];
     const err = new MarketplaceNotFoundError(marketplace, scopeList);
-    return { status: "failed", reason: "not added", error: err, cause: errorMessage(err) };
+    return {
+      status: "failed",
+      reason: "marketplace not added",
+      error: err,
+      cause: errorMessage(err),
+    };
   }
 
   notify(ctx, pi, {
     kind: "marketplace-not-added",
     name: marketplace,
     ...(requestedScope !== undefined && { scope: requestedScope }),
+    ...(await crossScopeFlag({ cwd, marketplace, scope: requestedScope })),
   });
   return undefined;
 }

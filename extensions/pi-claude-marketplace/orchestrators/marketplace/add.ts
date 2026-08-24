@@ -129,7 +129,7 @@ export type AddMarketplaceNotifications =
  *
  * `reason` is typed as `Reason` (not `ContentReason`) so the `applyReconcile`
  * caller can dispatch on the broader closed set, including the
- * structural `"not added"` sentinel surfaced by the `remove` sibling. This
+ * structural `"marketplace not added"` sentinel surfaced by the `remove` sibling. This
  * adopts a broader-than-the-plan type to keep the orchestrated outcome
  * dispatchable end-to-end without a separate marker field.
  */

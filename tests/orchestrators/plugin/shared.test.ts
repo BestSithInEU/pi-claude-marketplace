@@ -5,9 +5,9 @@ import path from "node:path";
 import test from "node:test";
 
 import { pathSource } from "../../../extensions/pi-claude-marketplace/domain/source.ts";
+import { marketplaceInOtherScope } from "../../../extensions/pi-claude-marketplace/orchestrators/marketplace/shared.ts";
 import {
   assertNoCrossPluginConflicts,
-  crossScopeRemedyApplies,
   removePluginRecord,
   resolveCrossScopePluginTarget,
   resolveInstallMarketplaceSource,
@@ -442,53 +442,8 @@ test("CMP-3 :: resolveInstallMarketplaceSource returns undefined when project-ta
 
 // ---------------------------------------------------------------------------
 // CMP-4 / SCOPE-01 -- the cross-scope remedy probe. Decides WHETHER the
-// `{not added}` row carries a remedy trailer; owns no user-visible bytes.
+// `{marketplace not added}` row carries a remedy trailer; owns no user-visible bytes.
 // ---------------------------------------------------------------------------
-
-test("CMP-4 / SCOPE-01 :: a user-target miss with a project-only container qualifies for the remedy", async () => {
-  await withTmpCwd(async (cwd) => {
-    await saveScopedState(cwd, "project", { mp: {} });
-    assert.equal(await crossScopeRemedyApplies({ cwd, marketplace: "mp", scope: "user" }), true);
-  });
-});
-
-test("CMP-4 / SCOPE-01 :: a user-target miss with no container anywhere does NOT qualify", async () => {
-  await withTmpCwd(async (cwd) => {
-    assert.equal(
-      await crossScopeRemedyApplies({ cwd, marketplace: "ghost-mp", scope: "user" }),
-      false,
-    );
-  });
-});
-
-test("CMP-4 / SCOPE-01 :: a PROJECT-target miss never qualifies -- CMP-3 already consulted user scope", async () => {
-  await withTmpCwd(async (cwd) => {
-    // Seed the user container to prove the answer is structural rather than
-    // data-driven: a project-target `marketplace-absent` means the CMP-3
-    // project->user fallback already missed, so a container visible here could
-    // not have been the one the install needed. The probe short-circuits on
-    // the target scope and never reads.
-    await saveScopedState(cwd, "user", { mp: {} });
-    assert.equal(
-      await crossScopeRemedyApplies({ cwd, marketplace: "mp", scope: "project" }),
-      false,
-    );
-  });
-});
-
-test("CMP-4 / SCOPE-01 :: an unreadable other-scope state.json degrades to `false` rather than throwing", async () => {
-  await withTmpCwd(async (cwd) => {
-    const projectLocations = locationsFor("project", cwd);
-    await mkdir(projectLocations.extensionRoot, { recursive: true });
-    await writeFile(
-      path.join(projectLocations.extensionRoot, "state.json"),
-      "{ this is not json",
-      "utf8",
-    );
-
-    assert.equal(await crossScopeRemedyApplies({ cwd, marketplace: "mp", scope: "user" }), false);
-  });
-});
 
 // ---------------------------------------------------------------------------
 // CMP-5 -- unqualified installed-plugin target resolution.
@@ -622,7 +577,7 @@ test("ATTR-02 :: explicit-scope marketplace target resolves in the requested sco
 
 // SCOPE-01 / M11: explicit scope misses but the marketplace container exists in
 // the OTHER scope -> other-scope arm carrying the REQUESTED scope (the update
-// entrypoint surfaces the `[requestedScope]` bracket on `{not added}`).
+// entrypoint surfaces the `[requestedScope]` bracket on `{marketplace not added}`).
 test("SCOPE-01 :: explicit-scope marketplace target present only in the other scope -> other-scope", async () => {
   await withTmpCwd(async (cwd) => {
     // The marketplace lives in user; the operator asks for project explicitly.
@@ -644,7 +599,7 @@ test("SCOPE-01 :: explicit-scope marketplace target present only in the other sc
 
 // ATTR-02: explicit scope misses AND the marketplace is absent in the other
 // scope -> marketplace-absent carrying the requested scope (bracketed
-// `{not added}`).
+// `{marketplace not added}`).
 test("ATTR-02 :: explicit-scope marketplace target absent in both scopes -> marketplace-absent with requestedScope", async () => {
   await withTmpCwd(async (cwd) => {
     const resolved = await resolveInstalledMarketplaceTarget({
@@ -759,5 +714,45 @@ test("SCOPE-01 :: unqualified, container present without the plugin row -> resol
 
     assert.equal(result.kind, "resolved");
     assert.equal(result.kind === "resolved" ? result.scope : undefined, "user");
+  });
+});
+
+test("CMP-4 / SCOPE-01 :: a user-target miss with a project-only container qualifies for the remedy", async () => {
+  await withTmpCwd(async (cwd) => {
+    await saveScopedState(cwd, "project", { mp: {} });
+    assert.equal(await marketplaceInOtherScope({ cwd, marketplace: "mp", scope: "user" }), true);
+  });
+});
+
+test("CMP-4 / SCOPE-01 :: a user-target miss with no container anywhere does NOT qualify", async () => {
+  await withTmpCwd(async (cwd) => {
+    assert.equal(
+      await marketplaceInOtherScope({ cwd, marketplace: "ghost-mp", scope: "user" }),
+      false,
+    );
+  });
+});
+
+test("CMP-4 / SCOPE-01 :: a PROJECT-target miss qualifies off the USER container", async () => {
+  await withTmpCwd(async (cwd) => {
+    // The probe is symmetric: it serves every verb that renders the row, and
+    // the verbs other than `install` carry no CMP-3 fallback, so a project
+    // target genuinely can miss a container the user scope holds.
+    await saveScopedState(cwd, "user", { mp: {} });
+    assert.equal(await marketplaceInOtherScope({ cwd, marketplace: "mp", scope: "project" }), true);
+  });
+});
+
+test("CMP-4 / SCOPE-01 :: an unreadable other-scope state.json degrades to `false` rather than throwing", async () => {
+  await withTmpCwd(async (cwd) => {
+    const projectLocations = locationsFor("project", cwd);
+    await mkdir(projectLocations.extensionRoot, { recursive: true });
+    await writeFile(
+      path.join(projectLocations.extensionRoot, "state.json"),
+      "{ this is not json",
+      "utf8",
+    );
+
+    assert.equal(await marketplaceInOtherScope({ cwd, marketplace: "mp", scope: "user" }), false);
   });
 });

@@ -74,11 +74,11 @@ import type { Dependency } from "./concerns/soft-dep.ts";
  * update / marketplace-update rows (`"permission denied"` /
  * `"source missing"` / `"network unreachable"`).
  *
- * INFO-04 / INFO-08 / TYPE-01: `"not added"` is the STRUCTURAL marketplace-
+ * INFO-04 / INFO-08 / TYPE-01: `"marketplace not added"` is the STRUCTURAL marketplace-
  * absent marker -- it is NOT a `ContentReason` and is reachable ONLY via the
  * dedicated `MarketplaceNotAddedMessage` variant (`renderMarketplaceNotAdded`
- * hard-codes the `{not added}` brace). A request for a scope where the target
- * marketplace is not present renders `⊘ <name> [<scope>] (failed) {not added}`
+ * hard-codes the `{marketplace not added}` brace). A request for a scope where the target
+ * marketplace is not present renders `⊘ <name> [<scope>] (failed) {marketplace not added}`
  * at column 0 with severity `"error"`.
  *
  * D-09 / OUT-08: this tuple is the byte-source of the closed set -- its
@@ -90,7 +90,7 @@ import type { Dependency } from "./concerns/soft-dep.ts";
  * carries a compile-time completeness proof that its partition exactly covers
  * this tuple. Command-private reasons (`duplicate name` / `stale clone` /
  * `not found` / `not installed` / `plugins remain` / `orphan rewake`) and the
- * structural `"not added"` marker are owned outside the shared topic groups.
+ * structural `"marketplace not added"` marker are owned outside the shared topic groups.
  */
 export const REASONS = [
   "up-to-date",
@@ -130,7 +130,26 @@ export const REASONS = [
   "permission denied",
   "source missing",
   "network unreachable",
-  "not added",
+  "marketplace not added",
+  // CMP-4 / SCOPE-01: the STRUCTURAL sibling of `marketplace not added`, replacing it (never
+  // joining it) when the marketplace container was found in the scope the
+  // command did not target. `marketplace not added` claims the container does not exist;
+  // this token claims it does, just not here, and the two claims cannot both be
+  // true of one subject. Excluded from `ContentReason` for the same reason
+  // `marketplace not added` is (TYPE-02 / D-46-02): it describes the marketplace SUBJECT,
+  // so a plugin row must not be able to carry it.
+  //
+  // The scope is baked into the token rather than interpolated because the
+  // closed set is a catalog of literals. Only the user-target direction is
+  // reachable today -- `marketplaceInOtherScope` returns false unless the
+  // target scope is `user` -- so the `project` sibling is deliberately NOT
+  // declared until a caller can render it.
+  "marketplace not added to user scope",
+  // CMP-4 / SCOPE-01: the project-target direction of the same claim. Declared
+  // as its own literal because the closed set is a catalog of literals, not a
+  // template. Reachable on any verb that takes an explicit `--scope project`
+  // and misses a container the USER scope holds.
+  "marketplace not added to project scope",
   // SURF-05 / D-63-08: a hook handler declared `rewakeMessage` or
   // `rewakeSummary` without `asyncRewake: true`. The orphan companion-field
   // family is admitted at the schema layer (HOOK-06 / EXEC-05) but produces
@@ -203,15 +222,20 @@ export type Reason = (typeof REASONS)[number];
 
 /**
  * The closed set of CONTENT reasons -- every `Reason` EXCEPT the structural
- * `"not added"` marker (TYPE-02 / D-46-02). Content reasons describe WHY a
+ * `"marketplace not added"` marker (TYPE-02 / D-46-02). Content reasons describe WHY a
  * resource is in a failure / skipped / unavailable state; the structural
- * `"not added"` describes that the marketplace SUBJECT is absent entirely and
+ * `"marketplace not added"` describes that the marketplace SUBJECT is absent entirely and
  * is reachable ONLY via the dedicated `MarketplaceNotAddedMessage` variant
  * (TYPE-01). Retyping the row `reasons` fields to `readonly ContentReason[]`
- * makes a mixed `["not added", "permission denied"]` row a COMPILE error
+ * makes a mixed `["marketplace not added", "permission denied"]` row a COMPILE error
  * rather than a render-time `length === 1` guard.
  */
-export type ContentReason = Exclude<Reason, "not added">;
+export type ContentReason = Exclude<
+  Reason,
+  | "marketplace not added"
+  | "marketplace not added to user scope"
+  | "marketplace not added to project scope"
+>;
 
 /**
  * I5 / PR #51 / T-53-02-02 / T-55-02-01: collapse any absolute-path token
@@ -1208,7 +1232,7 @@ export interface MpUpdated extends MpCommon {
  * (D-48-A): a marketplace-op precondition failure with NO plugin child rows
  * (e.g. `marketplace add` duplicate-name / unsupported-source) renders its
  * closed-set reason on the marketplace subject. `reasons?` is
- * `readonly ContentReason[]` so the structural `"not added"` marker stays
+ * `readonly ContentReason[]` so the structural `"marketplace not added"` marker stays
  * unrepresentable here (TYPE-02) -- that condition is the dedicated
  * `MarketplaceNotAddedMessage` variant. When omitted/empty the brace
  * collapses (composeReasons returns ""), preserving the bare
@@ -1346,7 +1370,7 @@ export interface CascadeNotificationMessage {
  * (marketplace.json description, optional) line. The `last_updated:` line
  * renders for all git-backed kinds (github + url), never for path (D-76-10).
  *
- * The marketplace-absent (`{not added}`) condition is NOT emitted by this
+ * The marketplace-absent (`{marketplace not added}`) condition is NOT emitted by this
  * variant -- it is the dedicated `MarketplaceNotAddedMessage` variant
  * (TYPE-01 / D-46-01). This variant can only carry a found marketplace.
  */
@@ -1381,7 +1405,7 @@ export interface MarketplaceInfoMessage {
  * The marketplace-absent condition is NOT carried by this variant -- it is
  * the dedicated `MarketplaceNotAddedMessage` variant (TYPE-01). This variant's
  * `plugin.reasons` is a `readonly ContentReason[]` (TYPE-02): the structural
- * `"not added"` marker can never appear on it.
+ * `"marketplace not added"` marker can never appear on it.
  */
 export interface PluginInfoMessage {
   readonly kind: "plugin-info";
@@ -1415,7 +1439,7 @@ export type PluginInfoRow =
  * `reasons?: readonly ContentReason[]` is populated when `status` is
  * `"unavailable"` or `"failed"` (e.g., `["not in manifest"]` for an unknown
  * plugin, `["unreadable manifest"]` for a manifest read failure). The
- * structural `"not added"` marker is NOT a `ContentReason` (TYPE-02): the
+ * structural `"marketplace not added"` marker is NOT a `ContentReason` (TYPE-02): the
  * marketplace-absent condition is carried by the dedicated
  * `MarketplaceNotAddedMessage` variant, never by this row field.
  */
@@ -1491,7 +1515,7 @@ export interface PluginInfoComponentsUnresolved {
  * Iteration order is the orchestrator's responsibility (project-first
  * per MSG-GR-3). Reload-hint NEVER fires; severity is always info (no
  * failure can be expressed on a fan-out payload -- the marketplace-absent
- * (`{not added}`) failure surface is carried by the dedicated
+ * (`{marketplace not added}`) failure surface is carried by the dedicated
  * `MarketplaceNotAddedMessage` variant, TYPE-01).
  *
  * The `blocks` tuple is non-empty (`readonly [T, ...T[]]`) so an empty
@@ -1545,11 +1569,11 @@ export interface ReconcilePendingEmptyMessage {
  * `name` (the MARKETPLACE name) and an optional `scope` (`scope` present =>
  * `[scope]` bracket; absent => no bracket). It has NO placeholder
  * `marketplaceScope` / `marketplaceDetails` fields and NO `reasons` field --
- * the structural `{not added}` brace is hard-coded by `renderMarketplaceNotAdded`.
+ * the structural `{marketplace not added}` brace is hard-coded by `renderMarketplaceNotAdded`.
  *
- * Renders byte-identical to the former `renderPluginInfo` `{not added}`
+ * Renders byte-identical to the former `renderPluginInfo` `{marketplace not added}`
  * carve-out (D-46-01a): a bare column-0 row
- * `⊘ <name> [scope?] (failed) {not added}` at severity `"error"`. The info
+ * `⊘ <name> [scope?] (failed) {marketplace not added}` at severity `"error"`. The info
  * construction sites build it in this phase; install / uninstall / reinstall /
  * update reuse the SAME variant in later phases (no re-cut).
  */
@@ -1559,15 +1583,15 @@ export interface MarketplaceNotAddedMessage {
   readonly scope?: Scope;
   /**
    * CMP-4 / SCOPE-01: the caller found the marketplace CONTAINER in the scope
-   * it did not target. Gates the cross-scope remedy trailer and nothing else --
-   * the `{not added}` brace, the severity, and the summary line are unchanged,
-   * and every construction site that omits it renders the bare row.
+   * it did not target. Selects which STRUCTURAL reason token the brace carries
+   * and nothing else -- the severity and the summary line are unchanged, and
+   * every construction site that omits it renders the bare `{marketplace not added}` row.
    *
-   * A BOOLEAN, deliberately: the caller decides WHETHER a remedy applies, this
-   * file owns the BYTES. A caller-supplied string would put user-visible prose
-   * back in the hands of the construction site, which is exactly what
-   * `docs/messaging-style-guide.md` retired. `scope` supplies the target scope
-   * and the other scope is its complement, so no further field is needed.
+   * A BOOLEAN, deliberately: the caller decides WHETHER the container was found
+   * elsewhere, this file owns the BYTES. A caller-supplied string would put
+   * user-visible prose back in the hands of the construction site, which is
+   * exactly what `docs/messaging-style-guide.md` retired. `scope` supplies the
+   * target scope, so no further field is needed.
    */
   readonly presentInOtherScope?: boolean;
 }
@@ -2821,7 +2845,7 @@ function computeSeverity(message: NotificationMessage): ComputedSeverity {
   // the embedded plugin row is `(failed)` (e.g. an unreadable manifest), else
   // info; `marketplace-info-cascade` AND `plugin-info-cascade` payloads route
   // to info unconditionally -- no failure can be expressed on a fan-out
-  // wrapper. The `{not added}` --scope mismatch condition is carried by the
+  // wrapper. The `{marketplace not added}` --scope mismatch condition is carried by the
   // dedicated `marketplace-not-added` arm, which always routes to `"error"`.
   if (isInfoKind(message)) {
     // The `marketplace-not-added` variant routes to "error" (the marketplace
@@ -3524,13 +3548,15 @@ function appendResolvedComponentLines(
 
 /**
  * TYPE-01 / D-46-01a: render the dedicated `MarketplaceNotAddedMessage`
- * variant. Lifted from the former `renderPluginInfo` `{not added}` carve-out;
+ * variant. Lifted from the former `renderPluginInfo` `{marketplace not added}` carve-out;
  * emits the byte-identical bare column-0 row
- * `⊘ <name> [scope?] (failed) {not added}` with NO marketplace header (the row
+ * `⊘ <name> [scope?] (failed) {marketplace not added}` with NO marketplace header (the row
  * IS the message). `name` carries the MARKETPLACE name. `scope` present =>
  * `[scope]` bracket; absent => no bracket. The version slot collapses to `""`
- * (the variant carries no version) and the `{not added}` brace is hard-coded
- * via the `["not added"]` literal (the variant carries no `reasons` field).
+ * (the variant carries no version) and the brace is hard-coded via a
+ * single-token literal (the variant carries no `reasons` field): `marketplace not added`,
+ * or the `marketplace not added to user scope` sibling when `presentInOtherScope`
+ * says the container was found in the scope the command did not target.
  *
  * `probe` is accepted for signature parity with the other info renderers and
  * threaded into `composeReasons` with BOTH soft-dep declares-flags FALSE --
@@ -3540,51 +3566,39 @@ function renderMarketplaceNotAdded(
   message: MarketplaceNotAddedMessage,
   probe: SoftDepStatus,
 ): string {
-  const row = joinTokens([
+  return joinTokens([
     ICON_UNINSTALLABLE,
     message.name,
     message.scope === undefined ? "" : `[${message.scope}]`,
     renderVersion(undefined),
     "(failed)",
-    composeReasons(["not added"], false, false, probe),
+    composeReasons([notAddedReasonFor(message)], false, false, probe),
   ]);
-
-  const remedy = crossScopeRemedyTrailerFor(message);
-  return remedy === undefined ? row : `${row}\n\n${remedy}`;
 }
 
 /**
- * CMP-4 / SCOPE-01 / D-29: the cross-scope remedy trailer, or `undefined` when
- * the row carries none. Rendered below the `{not added}` row with ONE blank
- * line, like every other trailer, and at column 0 -- 2-space and 4-space
- * indents are the plugin-row and cause-chain grammar and must not be borrowed
- * for prose.
+ * CMP-4 / SCOPE-01: pick the structural token the `{...}` brace carries.
  *
- * Both remedies act on the axis that failed, which is SCOPE. `--local` is
- * deliberately absent: it selects the physical config file WITHIN a scope, so
- * it cannot resolve a scope miss, and naming it here would present the
- * tracked-vs-untracked choice as part of the fix.
+ * The qualified token REPLACES the plain one rather than joining it -- "the
+ * container does not exist" and "it exists, but not in the scope you targeted"
+ * are competing claims about one subject, so a brace carrying both would state
+ * both.
  *
- * `marketplace add` comes FIRST because it makes the command the user actually
- * typed succeed. Re-running at the other scope assumes they meant that scope
- * all along -- a fair guess, but only a guess, and a bare `--scope` means they
- * chose nothing rather than that they chose the other one.
+ * A qualified token requires a `scope`, which is what the `[scope]` bracket
+ * renders from. An ABSENT bracket means the caller consulted BOTH scopes and
+ * both missed (D-03), so there is no other scope left to be present in and the
+ * plain token is the only truthful one.
  *
- * The byte form is FROZEN as a doc contract, locked in
- * `docs/output-catalog.md` and `docs/messaging-style-guide.md` and asserted
- * byte-for-byte by the catalog UAT.
+ * The scope word names the scope that MISSED, matching the bracket beside it.
  */
-function crossScopeRemedyTrailerFor(message: MarketplaceNotAddedMessage): string | undefined {
+function notAddedReasonFor(message: MarketplaceNotAddedMessage): Reason {
   if (message.presentInOtherScope !== true || message.scope === undefined) {
-    return undefined;
+    return "marketplace not added";
   }
 
-  const presentIn: Scope = message.scope === "user" ? "project" : "user";
-  return (
-    `Marketplace "${message.name}" is registered at ${presentIn} scope. ` +
-    `Add it at ${message.scope} scope with marketplace add, ` +
-    `or re-run the install with --scope ${presentIn}.`
-  );
+  return message.scope === "user"
+    ? "marketplace not added to user scope"
+    : "marketplace not added to project scope";
 }
 
 /**

@@ -2100,11 +2100,11 @@ test("refreshRecord: unsupported source kind surfaces as notifyError (lines 219-
   });
 });
 
-test("updateMarketplace: explicit-scope missing marketplace -> standalone {not added} (SC#1)", async () => {
+test("updateMarketplace: explicit-scope missing marketplace -> standalone {marketplace not added} (SC#1)", async () => {
   // SC#1 cross-op convergence: an explicit-scope miss is blocked by the
   // pre-guard loadState existence read BEFORE it reaches snapshotAfterRefresh's
   // withStateGuard (which would otherwise throw MarketplaceNotFoundError raw).
-  // It renders the canonical standalone `(failed) {not added}` variant -- no
+  // It renders the canonical standalone `(failed) {marketplace not added}` variant -- no
   // longer a synthetic `(failed)` cascade row or a raw escape. Byte-locked to
   // the exact canonical row (mirrors remove.ts / autoupdate.ts convergence).
   await withHermeticHome(async ({ cwd }) => {
@@ -2119,7 +2119,7 @@ test("updateMarketplace: explicit-scope missing marketplace -> standalone {not a
     assert.ok(first !== undefined);
     assert.equal(
       first.message,
-      "A marketplace operation has failed.\n\n⊘ ghost [project] (failed) {not added}",
+      "A marketplace operation has failed.\n\n⊘ ghost [project] (failed) {marketplace not added}",
     );
     assert.equal(first.severity, "error");
   });
@@ -2132,10 +2132,10 @@ test("CR-01 TOCTOU: refreshOneMarketplace silently no-ops on a removed marketpla
   // through a gitOps lifecycle hook... but the guard load precedes any gitOps
   // call, so instead we assert the BEHAVIORAL contract via the seam end-state:
   // when snapshotAfterRefresh yields undefined, refreshOneMarketplace must emit
-  // NOTHING (the pre-guard already notified `{not added}`) and MUST NOT render
+  // NOTHING (the pre-guard already notified `{marketplace not added}`) and MUST NOT render
   // the lying `{network unreachable}` row. We prove the negative directly: an
   // explicit-scope miss (record absent at BOTH reads) emits exactly the
-  // `{not added}` convergence row and NEVER `{network unreachable}`.
+  // `{marketplace not added}` convergence row and NEVER `{network unreachable}`.
   await withHermeticHome(async ({ cwd }) => {
     const { ctx, pi, notifications } = makeCtx();
     const { gitOps, state: gitState } = makeMockGitOps();
@@ -2156,21 +2156,21 @@ test("CR-01 TOCTOU: refreshOneMarketplace silently no-ops on a removed marketpla
       /\{network unreachable\}/,
       `a missing/removed marketplace must NEVER render the lying {network unreachable} reason:\n${composed}`,
     );
-    // Exactly the convergence `{not added}` row, one emission.
+    // Exactly the convergence `{marketplace not added}` row, one emission.
     assert.equal(notifications.length, 1);
     const first = notifications[0];
     assert.ok(first !== undefined);
     assert.equal(
       first.message,
-      "A marketplace operation has failed.\n\n⊘ vanished [project] (failed) {not added}",
+      "A marketplace operation has failed.\n\n⊘ vanished [project] (failed) {marketplace not added}",
     );
   });
 });
 
-test("updateMarketplace: bare-form missing marketplace -> bracketless {not added} (SC#1)", async () => {
+test("updateMarketplace: bare-form missing marketplace -> bracketless {marketplace not added} (SC#1)", async () => {
   // SC#1 cross-op convergence, bare form (no --scope): resolveScopeFromState
   // throws MarketplaceNotFoundError when absent from BOTH scopes; the pre-guard
-  // catches it and routes to the bracketless standalone `(failed) {not added}`
+  // catches it and routes to the bracketless standalone `(failed) {marketplace not added}`
   // variant. The call resolves WITHOUT rejection, proving the raw
   // MarketplaceNotFoundError no longer escapes the orchestrator boundary.
   await withHermeticHome(async ({ cwd }) => {
@@ -2187,7 +2187,7 @@ test("updateMarketplace: bare-form missing marketplace -> bracketless {not added
     assert.ok(first !== undefined);
     assert.equal(
       first.message,
-      "A marketplace operation has failed.\n\n⊘ ghost (failed) {not added}",
+      "A marketplace operation has failed.\n\n⊘ ghost (failed) {marketplace not added}",
     );
     assert.equal(first.severity, "error");
   });

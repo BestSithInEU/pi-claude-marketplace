@@ -92,6 +92,7 @@ import {
 } from "../../transaction/with-state-guard.ts";
 import { DEFAULT_CREDENTIAL_OPS, buildCloneAuth } from "../auth-host.ts";
 import { resolveScopeFromState } from "../marketplace/shared.ts";
+import { crossScopeFlag } from "../marketplace/shared.ts";
 
 import { canonicalCloneUrl, materializePluginClone, resolveGitSubdirRoot } from "./clone-cache.ts";
 import { discoverGeneratedNames } from "./discover-names.ts";
@@ -464,7 +465,7 @@ export async function reinstallPlugins(
   try {
     targets = await enumerateReinstallTargets(opts);
   } catch (err) {
-    handleEnumerationFailure(opts, err);
+    await handleEnumerationFailure(opts, err);
     return [];
   }
 
@@ -559,14 +560,22 @@ export async function reinstallPlugins(
  *     trailer (marketplace-level rows carry no cause per SNM-10). Severity
  *     (`error`) + no reload-hint are computed by notify().
  */
-function handleEnumerationFailure(opts: ReinstallPluginsOptions, err: unknown): void {
-  const { ctx, pi } = opts;
+async function handleEnumerationFailure(
+  opts: ReinstallPluginsOptions,
+  err: unknown,
+): Promise<void> {
+  const { ctx, pi, cwd } = opts;
 
   if (err instanceof MarketplaceNotAddedSignal) {
     notify(ctx, pi, {
       kind: "marketplace-not-added",
       name: err.marketplace,
       ...(err.requestedScope !== undefined && { scope: err.requestedScope }),
+      ...(await crossScopeFlag({
+        cwd,
+        marketplace: err.marketplace,
+        scope: err.requestedScope,
+      })),
     });
     return;
   }
@@ -641,7 +650,7 @@ async function enumerateMarketplaceReinstallTargets(
   // three forms (explicit-scope-plugin, explicit-scope-marketplace, bare).
   // A miss raises `MarketplaceNotAddedSignal` -- caught at the
   // `reinstallPlugins` entrypoint and re-attributed to the standalone
-  // `{not added}` variant -- instead of the former per-form divergence
+  // `{marketplace not added}` variant -- instead of the former per-form divergence
   // (synthesized phantom target / raw `MarketplaceNotFoundError`/`Error`).
   const resolved = await resolveMarketplaceReinstallScope(cwd, marketplace, target, explicitScope);
   const state = await loadState(resolved.locations.extensionRoot);
@@ -670,9 +679,9 @@ async function enumerateMarketplaceReinstallTargets(
  *    hint (signal carrying the REQUESTED scope) rather than a synthesized
  *    `(skipped) {not installed}` phantom target.
  *  - explicit-scope MARKETPLACE form: confirm the container in the requested
- *    scope; on a miss, signal `{not added}` carrying the REQUESTED scope.
+ *    scope; on a miss, signal `{marketplace not added}` carrying the REQUESTED scope.
  *  - bare (no `--scope`) form: the existing two-scope `resolveScopeFromState`
- *    read establishes both-scope absence; on a miss, signal `{not added}`
+ *    read establishes both-scope absence; on a miss, signal `{marketplace not added}`
  *    with NO bracket (absent-from-both form).
  *
  * All reads are `loadState` only (NFR-5: no network).
@@ -715,7 +724,7 @@ async function resolveMarketplaceReinstallScope(
     // is consistent with update. Byte-neutral for the operator: a `resolved`
     // arm yields the same (scope, locations) the former inline guard returned;
     // both the `marketplace-absent` and `other-scope` arms (which carry the
-    // REQUESTED scope) collapse to the same `{not added} [requestedScope]`
+    // REQUESTED scope) collapse to the same `{marketplace not added} [requestedScope]`
     // bracket-only emission per resolved Open Question #1.
     const resolution = await resolveInstalledMarketplaceTarget({
       cwd,
@@ -737,7 +746,7 @@ async function resolveMarketplaceReinstallScope(
     );
   } catch (err) {
     // resolveScopeFromState throws MarketplaceNotFoundError when absent from
-    // BOTH scopes -- re-attribute to the no-bracket `{not added}` signal
+    // BOTH scopes -- re-attribute to the no-bracket `{marketplace not added}` signal
     // (absent-from-both form). Any other error propagates unchanged.
     if (err instanceof MarketplaceNotFoundError) {
       throw new MarketplaceNotAddedSignal(marketplace);

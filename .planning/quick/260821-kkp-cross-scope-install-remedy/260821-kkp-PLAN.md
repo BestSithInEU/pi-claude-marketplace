@@ -51,7 +51,7 @@ completion half is sound and is carried over; its install half is replaced.
 - `renderMarketplaceNotAdded` appends it after the row separated by a BLANK
   line, matching every other trailer. No 2-space or 4-space indented prose --
   those indents mean plugin row and cause chain.
-- `crossScopeRemedyApplies` in `orchestrators/plugin/shared.ts`: returns
+- `marketplaceInOtherScope` in `orchestrators/plugin/shared.ts`: returns
   `false` immediately unless the target scope is `user` (a project-target
   `marketplace-absent` means the CMP-3 project->user fallback ALREADY missed,
   so the other scope provably has no container -- no unreachable branch, no

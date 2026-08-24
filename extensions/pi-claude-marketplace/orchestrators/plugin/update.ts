@@ -122,6 +122,7 @@ import { narrowUnsupportedKinds } from "../../shared/probe-classifiers.ts";
 import { withLockedStateTransaction, withStateGuard } from "../../transaction/with-state-guard.ts";
 import { DEFAULT_CREDENTIAL_OPS, buildAuthForHost, hostFromCloneUrl } from "../auth-host.ts";
 import { DEFAULT_GIT_OPS, refreshGitHubClone, type GitOps } from "../marketplace/shared.ts";
+import { crossScopeFlag } from "../marketplace/shared.ts";
 
 import {
   canonicalCloneUrl,
@@ -346,7 +347,7 @@ export async function updatePlugins(opts: UpdatePluginsOptions): Promise<void> {
   try {
     targets = await enumerateTargets(opts);
   } catch (err) {
-    handleEnumerateFailure(opts, err);
+    await handleEnumerateFailure(opts, err);
     return;
   }
 
@@ -464,21 +465,26 @@ export async function updatePlugins(opts: UpdatePluginsOptions): Promise<void> {
  *     identical to `info` and the install/uninstall/reinstall plans -- BEFORE
  *     any cascade row exists. `requestedScope` (when present) renders the
  *     `[scope]` bracket (SCOPE-01); the bare both-scopes-miss form carries no
- *     bracket. Structural `{not added}`, no new REASONS member (D-47-B).
+ *     bracket. Structural `{marketplace not added}`, no new REASONS member (D-47-B).
  *   - bare form (`target.kind === "all"`): WR-05 -- no marketplace identity to
  *     thread; surface via `notifyBareFormEnumerateFailure`.
  *   - `marketplace` / `plugin`: Option B synthetic `PluginFailedMessage` under
  *     the real marketplace name; the renderer composes the 4-space cause-chain
  *     trailer (WR-01 parens-wrapping for the bare-marketplace row name).
  */
-function handleEnumerateFailure(opts: UpdatePluginsOptions, err: unknown): void {
-  const { ctx, pi, target, scope: explicitScope } = opts;
+async function handleEnumerateFailure(opts: UpdatePluginsOptions, err: unknown): Promise<void> {
+  const { ctx, pi, cwd, target, scope: explicitScope } = opts;
 
   if (err instanceof MarketplaceNotAddedSignal) {
     notify(ctx, pi, {
       kind: "marketplace-not-added",
       name: err.marketplace,
       ...(err.requestedScope !== undefined && { scope: err.requestedScope }),
+      ...(await crossScopeFlag({
+        cwd,
+        marketplace: err.marketplace,
+        scope: err.requestedScope,
+      })),
     });
     return;
   }
@@ -3072,7 +3078,7 @@ async function enumerateMarketplaceTarget(
   // downstream `(skipped) {not installed}` preflight. A
   // marketplace-absent / other-scope outcome raises `MarketplaceNotAddedSignal`
   // -- caught at the `updatePlugins` entrypoint and re-attributed to the
-  // standalone `{not added}` variant -- instead of the former raw
+  // standalone `{marketplace not added}` variant -- instead of the former raw
   // `Error`/`MarketplaceNotFoundError` -> `{not found}` misattribution (M10/M11).
   const resolved = await resolveUpdateMarketplaceScope(cwd, mpName, target, explicitScope);
   const state = await loadState(resolved.locations.extensionRoot);
@@ -3114,9 +3120,9 @@ async function enumerateMarketplaceTarget(
  *    present-marketplace/absent-plugin target resolves against the container's
  *    scope (the downstream `preflightUpdate` emits `(skipped) {not installed}`
  *    ); a marketplace-absent / other-scope outcome signals
- *    `{not added}` carrying the REQUESTED scope (SCOPE-01).
+ *    `{marketplace not added}` carrying the REQUESTED scope (SCOPE-01).
  *  - MARKETPLACE form: consume the discriminated `resolveInstalledMarketplaceTarget`
- *    result directly; `marketplace-absent`/`other-scope` signal `{not added}`
+ *    result directly; `marketplace-absent`/`other-scope` signal `{marketplace not added}`
  *    carrying the requested scope (bare form that missed in both carries no
  *    bracket).
  *
