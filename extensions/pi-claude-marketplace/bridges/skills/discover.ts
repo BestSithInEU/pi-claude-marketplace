@@ -9,9 +9,12 @@
 //   - D-07 (COMP-01): iterate over `componentPaths.skills: readonly string[]`
 //     (array shape). First-wins dedup by generated name; the second
 //     occurrence of a collision surfaces via `warnings[]` rather than
-//     throwing. RN-6 within-plugin source-name collision (same source name
-//     twice in the SAME dir) is handled by `domain/name.ts::assertSafeName`
-//     + `assertNoSkillCollisions` -- it remains a HARD error.
+//     throwing. RN-6 / D-141-04: that holds in both directions -- two skill
+//     dirs under ONE declared entry that elide to the same generated name
+//     (plugin `acme` with `acme-foo/` and `foo/`) take the same first-wins
+//     skip as two dirs under separate entries. Nothing throws on a
+//     generated-name collision. `domain/name.ts::assertSafeName` still
+//     guards the source name itself.
 //   - A declared `componentPaths.skills` element that is ITSELF a skill dir
 //     (contains `SKILL.md` directly, rather than being a parent of skill
 //     subdirs) is discovered as a single skill, threaded through the same
@@ -63,10 +66,23 @@ async function isSelfSkillDir(skillsDir: string): Promise<boolean> {
   );
 }
 
-function duplicateWarning(sourceName: string, skillsDir: string, generatedName: string): string {
+/**
+ * D-07 first-wins skip. Names the WINNING source rather than blaming an
+ * earlier `componentPaths.skills` entry: under D-141-04 the two sides of a
+ * collision are just as often two subdirs of ONE entry (`acme-foo/` and
+ * `foo/` in plugin `acme`), where there is no earlier entry to blame. Naming
+ * the winner is true either way and more useful. Matches the commands
+ * bridge's warning of the same shape.
+ */
+function duplicateWarning(
+  sourceName: string,
+  skillsDir: string,
+  generatedName: string,
+  winningSourceName: string,
+): string {
   return (
     `skill source "${sourceName}" in "${skillsDir}" elides to generated name ` +
-    `"${generatedName}" already produced by an earlier componentPaths.skills entry; ` +
+    `"${generatedName}", already produced by skill source "${winningSourceName}"; ` +
     `ignoring duplicate.`
   );
 }
@@ -96,8 +112,9 @@ async function collectSelfSkillDir(
   assertSafeName(sourceName, `skill directory name in ${skillsDir}`);
 
   const generatedName = generatedSkillName(pluginName, sourceName);
-  if (seenByGenerated.has(generatedName)) {
-    warnings.push(duplicateWarning(sourceName, skillsDir, generatedName));
+  const winner = seenByGenerated.get(generatedName);
+  if (winner !== undefined) {
+    warnings.push(duplicateWarning(sourceName, skillsDir, generatedName, winner.sourceName));
     return true;
   }
 
@@ -129,10 +146,10 @@ export async function discoverPluginSkills(input: {
 }): Promise<DiscoverPluginSkillsResult> {
   const skillsDirs = input.resolved.componentPaths.skills;
 
-  // First-wins dedup by generated name across ALL declared skills dirs.
-  // Within a single dir, RN-6 same-source-name collisions are caught
-  // downstream by `assertNoSkillCollisions`; across dirs, the second
-  // occurrence is a soft-fail warning per D-07 corollary.
+  // First-wins dedup by generated name across ALL declared skills dirs, and
+  // within each one. D-141-04: the second occurrence is a soft-fail warning
+  // per the D-07 corollary either way -- one entry or two makes no
+  // difference, because the map is keyed on the generated name alone.
   const seenByGenerated = new Map<string, DiscoveredSkill>();
   const warnings: string[] = [];
 
@@ -166,12 +183,13 @@ export async function discoverPluginSkills(input: {
 
       const generatedName = generatedSkillName(input.pluginName, entry.name);
 
-      // D-07: first-wins dedup by GENERATED name across array elements.
-      // The second occurrence is a soft-fail with a descriptive warning;
-      // RN-6 within-dir source-name collisions are still hard errors at
-      // `assertNoSkillCollisions` time.
-      if (seenByGenerated.has(generatedName)) {
-        warnings.push(duplicateWarning(entry.name, skillsDir, generatedName));
+      // D-07: first-wins dedup by GENERATED name. The second occurrence is
+      // a soft-fail with a descriptive warning. RN-6 / D-141-04: the loser
+      // may sit in this same dir -- `acme-foo/` and `foo/` in plugin `acme`
+      // both generate `acme-foo` -- and it takes the same skip.
+      const winner = seenByGenerated.get(generatedName);
+      if (winner !== undefined) {
+        warnings.push(duplicateWarning(entry.name, skillsDir, generatedName, winner.sourceName));
         continue;
       }
 

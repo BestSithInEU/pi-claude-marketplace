@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- A plugin author can now ship a command in a subdirectory of `commands/` and have it register. `commands/build/web.md` becomes `/acme:build:web`, one colon per path segment, to any depth, the same as Claude Code. Such a file was silently dropped before. Thanks to @rakesh-vs (#141).
+
+- The `<plugin>-` prefix is elided from the head of a command source name, and the head is the first path segment when the source is nested. `acme-tools/lint.md` in plugin `acme` becomes `/acme:tools:lint`, where Claude Code registers `acme:acme-tools:lint`. Claude Code performs no elision at all, so a flat `acme-flat.md` already diverged the same way.
+
+- A command whose name is exactly the plugin prefix now installs. `commands/acme-.md` in plugin `acme` registers as `/acme:acme-`, matching Claude Code. It failed to install before, and a directory named `acme-` failed the whole plugin.
+
+- A subdirectory of `commands/` that cannot be read no longer stops the install. Discovery skips it, reports it, and installs the rest of the plugin.
+
+- The same holds for a directory you can read but not search, where every file inside it fails to stat, and for a file whose path cannot produce a valid command name. Both skip one entry instead of the plugin.
+
+- A read failure that says the disk itself is unreliable still stops the install, so a partial plugin is never recorded as a whole one.
+
+- Discovery warnings now reach you. They were all silent before. A standalone `install`, `update` or `reinstall` prints the command and skill warnings under its row. The agent warnings reach the cascade channel that `/reload` and `import` already use.
+
+- A skipped subdirectory is reported, whether it is dotfile-prefixed or a symlink. A skipped file stays silent: it costs you one command, where a directory costs you every command below it.
+
+- A file that two declared commands directories both reach now warns. It installs under two names, which is correct but rarely what the author meant.
+
+- A staging failure names the plugin and the command. A nested source makes the generated name as long as the whole path, so a name too long for the filesystem is now reachable; it used to report a raw error code against an internal temporary path.
+
 - A `{not added}` row used to say a marketplace did not exist when it existed one scope over -- the common repo-bundled-marketplace case, where a default-scope (`user`) install misses a project-only marketplace. The row now names the scope that missed: `{marketplace not added to user scope}`, or `{marketplace not added to project scope}` in the other direction, replacing the plain `{marketplace not added}` that a miss in BOTH scopes still renders. Every command that can produce the row carries it -- `install`, `info`, `update`, `reinstall`, `uninstall`, `enable`, `disable`, and the three `marketplace` verbs. The commands still fail and their severity and summary are unchanged. The lookup deciding which token applies can never take the failure row down with it -- an unreadable state file in the other scope falls back to the plain token and keeps the error.
 
 - `uninstall`, `enable`, `disable`, `update`, and `reinstall` used to blame the marketplace when a plugin simply was not installed at the scope you named. Asking for `--scope project` while the marketplace sits at user scope reported `{marketplace not added to project scope}` -- but adding the marketplace there would not have made the command succeed, because nothing was installed there either. Those five now report the plugin: `⊘ <plugin> (failed|skipped) {not installed}`, the same row an in-scope marketplace with no record already produced. A marketplace absent from BOTH scopes still reports the marketplace, so a mistyped marketplace name is not disguised as a plugin that merely is not installed. `info` and the `marketplace` verbs are unchanged -- their subject is the marketplace.
