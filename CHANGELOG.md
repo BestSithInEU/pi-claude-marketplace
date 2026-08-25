@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.18.0] - 2026-08-24
 
 - A plugin author can now ship a command in a subdirectory of `commands/` and have it register. `commands/build/web.md` becomes `/acme:build:web`, one colon per path segment, to any depth, the same as Claude Code. Such a file was silently dropped before. Thanks to @rakesh-vs (#141).
 
