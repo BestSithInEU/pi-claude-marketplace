@@ -1499,6 +1499,31 @@ const FIXTURES: FixtureMap = {
         ],
       },
     },
+
+    // SCOPE-01: the container is registered in the scope the command did not
+    // target, so the brace names it beside `not installed` -- the scope word is
+    // always the OPPOSITE of the row's bracket.
+    "already-gone-cross-scope": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "error",
+      message: {
+        marketplaces: [
+          {
+            name: "official",
+            scope: "user",
+            plugins: [
+              {
+                status: "failed",
+                name: "helper",
+                reasons: ["not installed", "marketplace in project scope"],
+                severity: "error",
+                needsReload: false,
+              },
+            ],
+          },
+        ],
+      },
+    },
   },
 
   // -------------------------------------------------------------------------
@@ -1849,6 +1874,32 @@ const FIXTURES: FixtureMap = {
       },
     },
 
+    // SCOPE-01: the container is registered in the scope the command did not
+    // target, so the brace names it beside `not installed`.
+    "reinstall-not-installed-cross-scope": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "error",
+      message: {
+        label: "Plugin reinstall",
+        cardinality: "single",
+        marketplaces: [
+          {
+            name: "mp",
+            scope: "project",
+            plugins: [
+              {
+                status: "skipped",
+                name: "hello",
+                reasons: ["not installed", "marketplace in user scope"],
+                severity: "error",
+                needsReload: false,
+              },
+            ],
+          },
+        ],
+      },
+    },
+
     // ATTR-03 / SCOPE-01 / M6 / M7 / M8: marketplace not added in the requested
     // explicit scope (or present only in the other scope) -> standalone
     // `marketplace-not-added` variant carrying the requested-scope bracket,
@@ -1881,6 +1932,33 @@ const FIXTURES: FixtureMap = {
   // /claude:plugin update -- multi-plugin cascade; version-arrow rows.
   // -------------------------------------------------------------------------
   "/claude:plugin update": {
+    // SCOPE-01: `update <plugin>@<mp> --scope <scope>` where the container sits
+    // one scope over. The plugin is the subject and the brace names where the
+    // container really is -- the scope word is the OPPOSITE of the bracket.
+    "update-not-installed-cross-scope": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "error",
+      message: {
+        label: "Plugin update",
+        cardinality: "single",
+        marketplaces: [
+          {
+            name: "mp",
+            scope: "user",
+            plugins: [
+              {
+                status: "skipped",
+                name: "hello",
+                reasons: ["not installed", "marketplace in project scope"],
+                severity: "error",
+                needsReload: false,
+              },
+            ],
+          },
+        ],
+      },
+    },
+
     // UGRM-01: the bulk-update up-to-date `beta` row is suppressed at the
     // orchestrator, so the fixture omits it. UGRM-02: the `tally` override owns
     // the success category (one realized `updated` row -> `1 updated`); the
@@ -4264,10 +4342,10 @@ const FIXTURES: FixtureMap = {
 
     "enable-not-installed": {
       pi: piWithBothLoaded(),
-      // WR-03: marketplace present, plugin row absent -> actionable skip
-      // (`not installed` is NOT benign, so the cascade routes to warning
-      // per D-28-03 and carries the skipped-summary line).
-      expectedSeverity: "warning",
+      // WR-03 / D-01: marketplace present, plugin row absent. Nothing was
+      // enabled or disabled, so the operation was NOT carried out -> `error`,
+      // the same stamp every sibling verb applies to `["not installed"]`.
+      expectedSeverity: "error",
       message: {
         marketplaces: [
           {
@@ -4276,10 +4354,36 @@ const FIXTURES: FixtureMap = {
             plugins: [
               {
                 status: "skipped",
-                severity: "warning",
+                severity: "error",
                 needsReload: false,
                 name: "foo-plugin",
                 reasons: ["not installed"],
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // SCOPE-01: the container is registered in the scope the command did not
+    // target. The brace names it beside `not installed` so this miss stops
+    // rendering byte-identically to `enable-not-installed` above -- the two take
+    // different remedies. The scope word is the OPPOSITE of the row's bracket.
+    "enable-not-installed-cross-scope": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "error",
+      message: {
+        marketplaces: [
+          {
+            name: "claude-plugins-official",
+            scope: "project",
+            plugins: [
+              {
+                status: "skipped",
+                severity: "error",
+                needsReload: false,
+                name: "foo-plugin",
+                reasons: ["not installed", "marketplace in user scope"],
               },
             ],
           },
@@ -5054,14 +5158,14 @@ test("catalog UAT: every <!-- catalog-state: --> annotation pairs byte-equal wit
   const catalog = await readFile(CATALOG_PATH, "utf8");
   const examples = loadCatalogExamples(catalog);
 
-  // Exact count, not a floor: 175 is the number of annotated examples in
+  // Exact count, not a floor: 179 is the number of annotated examples in
   // docs/output-catalog.md, and it is what stops a `loadCatalogExamples`
   // refactor from silently parsing a fraction of the corpus. Update it
   // deliberately when catalog examples are added or removed.
   assert.equal(
     examples.length,
-    175,
-    `Expected exactly 175 annotated catalog examples; found ${examples.length}. Check that the discriminator comments in docs/output-catalog.md were not lost, and update this count when examples are added.`,
+    179,
+    `Expected exactly 179 annotated catalog examples; found ${examples.length}. Check that the discriminator comments in docs/output-catalog.md were not lost, and update this count when examples are added.`,
   );
 
   const failures: Failure[] = [];

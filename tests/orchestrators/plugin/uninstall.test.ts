@@ -606,7 +606,7 @@ test("ATTR-04 / M4: marketplace record itself absent -> LOUD {marketplace not ad
   });
 });
 
-test("SCOPE-01: explicit-scope uninstall of an other-scope-only target -> LOUD (failed) {not installed}", async () => {
+test("SCOPE-01: explicit-scope uninstall of an other-scope-only target -> LOUD (failed) {not installed, marketplace in user scope}", async () => {
   await withHermeticHome(async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "uninstall-scope01-"));
     try {
@@ -639,12 +639,14 @@ test("SCOPE-01: explicit-scope uninstall of an other-scope-only target -> LOUD (
 
       // SCOPE-01: not silent, not {not in manifest}. The container sits one
       // scope over, so nothing is installed at the requested scope and the
-      // PLUGIN is the row's subject. The user record is untouched.
+      // PLUGIN is the row's subject, with the brace naming the scope that DOES
+      // hold the container -- which is what separates this row from the
+      // in-scope already-gone row. The user record is untouched.
       assert.equal(notifications.length, 1);
       assert.equal(notifications[0]?.severity, "error");
       assert.equal(
         notifications[0]?.message,
-        "A plugin operation has failed.\n\n● mp [project]\n  ⊘ hello (failed) {not installed}",
+        "A plugin operation has failed.\n\n● mp [project]\n  ⊘ hello (failed) {not installed, marketplace in user scope}",
       );
       // SCOPE-01 negative invariant: uninstall must NEVER render the
       // scope-qualified marketplace token. `missIsNotInstalled` is consulted

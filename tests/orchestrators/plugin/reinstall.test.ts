@@ -873,7 +873,7 @@ test("PRL-05 bulk reinstall explicit scope filters targets", async () => {
   });
 });
 
-test("ATTR-03/SCOPE-01: explicit-scope-plugin reinstall of an other-scope-only target emits (skipped) {not installed}", async () => {
+test("ATTR-03/SCOPE-01: explicit-scope-plugin reinstall of an other-scope-only target emits (skipped) {not installed, marketplace in user scope}", async () => {
   await withHermeticHome(async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "reinstall-cross-scope-source-"));
     try {
@@ -890,11 +890,11 @@ test("ATTR-03/SCOPE-01: explicit-scope-plugin reinstall of an other-scope-only t
 
       // --scope project where the marketplace lives ONLY in user scope.
       // ATTR-03 / D-47-A: the PLUGIN is the row's subject -- the container sits
-      // one scope over, so nothing is installed at the scope named, which is
-      // the same fact an in-scope marketplace with no record yields. SCOPE-01:
-      // the `[project]` bracket carries the REQUESTED scope (the operator
-      // infers the other scope). SEV-04 / D-01: an absent target means the
-      // operation was NOT carried out, so the row is `error`.
+      // one scope over, so nothing is installed at the scope named. SCOPE-01:
+      // the `[project]` bracket carries the REQUESTED scope, and the brace
+      // token names the scope that HOLDS the container, so the operator is not
+      // left to infer it. SEV-04 / D-01: an absent target means the operation
+      // was NOT carried out, so the row is `error`.
       const outcomes = await reinstallPlugins({
         ctx,
         pi,
@@ -908,7 +908,7 @@ test("ATTR-03/SCOPE-01: explicit-scope-plugin reinstall of an other-scope-only t
       const body = notifications.at(-1)?.message ?? "";
       assert.equal(
         body,
-        "A plugin operation has failed.\n\n● mp [project]\n  ⊘ plug (skipped) {not installed}",
+        "A plugin operation has failed.\n\n● mp [project]\n  ⊘ plug (skipped) {not installed, marketplace in user scope}",
       );
       assert.equal(notifications.at(-1)?.severity, "error");
     } finally {

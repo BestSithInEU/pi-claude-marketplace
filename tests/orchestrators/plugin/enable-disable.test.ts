@@ -1805,7 +1805,7 @@ test("CFG-03 / WR-01: invalid config aborts and state.json is byte- and mtime-un
 // WR-03: marketplace present, plugin row absent -> (skipped) {not installed}
 // ──────────────────────────────────────────────────────────────────────────
 
-test("WR-03: enable on a present marketplace whose plugin row is absent renders (skipped) {not installed} at warning severity", async () => {
+test("WR-03 / D-01: enable on a present marketplace whose plugin row is absent renders (skipped) {not installed} at error severity", async () => {
   await withHermeticHome(async ({ cwd, home }) => {
     // Seed state with the marketplace container but a DIFFERENT plugin row.
     await writeUserState(home, {
@@ -1824,10 +1824,13 @@ test("WR-03: enable on a present marketplace whose plugin row is absent renders 
       scope: "user",
     });
     assert.equal(notifications.length, 1);
-    // `not installed` is NOT benign -> warning severity (D-28-03), and the
-    // taxonomy must NOT misuse `{not in manifest}` (reserved for "plugin
-    // absent from a PRESENT manifest").
-    assert.equal(notifications[0]!.severity, "warning");
+    // D-01: nothing was enabled, so the operation was NOT carried out -> error,
+    // matching every sibling verb's stamp for the same reason set. The taxonomy
+    // must NOT misuse `{not in manifest}` (reserved for "plugin absent from a
+    // PRESENT manifest").
+    assert.equal(notifications[0]!.severity, "error");
+    // SCOPE-01: the container IS in the targeted scope, so the brace stays bare
+    // -- no cross-scope token, because there is no other scope to point at.
     assert.match(notifications[0]!.message, /⊘ foo \(skipped\) \{not installed\}/);
     assert.ok(
       !notifications[0]!.message.includes("{not in manifest}"),
@@ -1869,11 +1872,14 @@ test("Marketplace not added: explicit --scope emits standalone marketplace-not-a
 //
 // The marketplace container sits ONE SCOPE OVER from the scope the operator
 // named, so nothing is installed at the named scope. The PLUGIN is the row's
-// subject -- the same `(skipped) {not installed}` an in-scope marketplace with
-// no plugin record yields (the WR-03 row above), because that is the identical
-// underlying fact. The `{marketplace not added...}` marketplace row is reserved
-// for a container absent from BOTH scopes, so a typo'd marketplace name is not
-// disguised as a plugin that merely is not installed.
+// subject, on the same `(skipped)` row an in-scope marketplace with no plugin
+// record yields (the WR-03 row above) -- but the brace additionally names where
+// the container really is, because the two misses take different remedies:
+// there you install the plugin, here you target the other scope or add the
+// marketplace at the one you named. The `{marketplace not added...}`
+// marketplace row is reserved for a container absent from BOTH scopes, so a
+// typo'd marketplace name is not disguised as a plugin that merely is not
+// installed.
 //
 // Both verbs are pinned separately because they render through SEPARATE
 // contexts (ENABLE_CONTEXT / DISABLE_CONTEXT, D-10). Their `skipped` render
@@ -1899,9 +1905,9 @@ test("SCOPE-01: enable of a target whose marketplace sits in the OTHER scope ren
     assert.equal(notifications.length, 1);
     assert.equal(
       notifications[0]!.message,
-      "A plugin operation needs attention.\n\n● mp [project]\n  ⊘ foo (skipped) {not installed}",
+      "A plugin operation has failed.\n\n● mp [project]\n  ⊘ foo (skipped) {not installed, marketplace in user scope}",
     );
-    assert.equal(notifications[0]!.severity, "warning");
+    assert.equal(notifications[0]!.severity, "error");
     // SCOPE-01 negative invariant: enable must NEVER render the scope-qualified
     // marketplace token. `missIsNotInstalled` is consulted BEFORE
     // `emitMarketplaceNotAdded`, and reordering the two would silently turn
@@ -1930,9 +1936,9 @@ test("SCOPE-01: disable of a target whose marketplace sits in the OTHER scope re
     assert.equal(notifications.length, 1);
     assert.equal(
       notifications[0]!.message,
-      "A plugin operation needs attention.\n\n● mp [project]\n  ⊘ foo (skipped) {not installed}",
+      "A plugin operation has failed.\n\n● mp [project]\n  ⊘ foo (skipped) {not installed, marketplace in user scope}",
     );
-    assert.equal(notifications[0]!.severity, "warning");
+    assert.equal(notifications[0]!.severity, "error");
     // SCOPE-01 negative invariant, disable's own context (see the enable twin).
     assert.ok(
       !notifications[0]!.message.includes("marketplace not added to"),
@@ -1941,11 +1947,14 @@ test("SCOPE-01: disable of a target whose marketplace sits in the OTHER scope re
   });
 });
 
-test("SCOPE-01: the user-direction miss (container in PROJECT, --scope user) renders the same plugin row under the [user] bracket", async () => {
+test("SCOPE-01: the user-direction miss (container in PROJECT, --scope user) mirrors both the [user] bracket and the cross-scope token", async () => {
   await withHermeticHome(async ({ cwd }) => {
     // The mirrored direction: container + plugin in PROJECT, operator names USER.
     // The bracket follows the REQUESTED scope, not the scope that holds the
-    // container -- the operator is told nothing is installed where they asked.
+    // container -- the operator is told nothing is installed where they asked --
+    // while the brace token follows the CONTAINER. The two therefore always
+    // disagree, and this test is the pin that keeps them from collapsing onto
+    // one scope word.
     await writeProjectState(cwd, { marketplaceName: "mp", pluginName: "foo", disabled: false });
     const { ctx, notifications } = makeCtx(cwd);
     await setPluginEnabled({
@@ -1960,9 +1969,9 @@ test("SCOPE-01: the user-direction miss (container in PROJECT, --scope user) ren
     assert.equal(notifications.length, 1);
     assert.equal(
       notifications[0]!.message,
-      "A plugin operation needs attention.\n\n● mp [user]\n  ⊘ foo (skipped) {not installed}",
+      "A plugin operation has failed.\n\n● mp [user]\n  ⊘ foo (skipped) {not installed, marketplace in project scope}",
     );
-    assert.equal(notifications[0]!.severity, "warning");
+    assert.equal(notifications[0]!.severity, "error");
     assert.ok(
       !notifications[0]!.message.includes("marketplace not added to"),
       `enable must not blame the marketplace on a cross-scope miss: ${notifications[0]!.message}`,

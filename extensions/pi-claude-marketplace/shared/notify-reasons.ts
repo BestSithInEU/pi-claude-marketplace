@@ -4,14 +4,14 @@ import type { SoftDepStatus } from "../platform/pi-api.ts";
 /**
  * shared/notify-reasons.ts -- the topic-grouped organization of the closed
  * reasons set (D-09). The byte-critical runtime tuple `REASONS` stays declared
- * in `notify.ts` as the SINGLE source of catalog truth (OUT-08: the 39-entry
+ * in `notify.ts` as the SINGLE source of catalog truth (OUT-08: the 43-entry
  * membership AND order must stay byte-identical for catalog stability); this
  * module reorganizes that closed set into shared topic-grouped enums + a
  * structural completeness proof WITHOUT recomposing the `REASONS` tuple (which
  * would risk reordering). The topic groups below are typed views over the same
  * closed `Reason` literals, so a command module can reference an
  * intent-meaningful group (e.g. the failure-class reasons) instead of the flat
- * 39-entry set.
+ * 43-entry set.
  *
  * D-90-05 is what moved the count from 37 to 38: `"unsupported component"`
  * joined the set as the truthful marker for a dropped component kind that has
@@ -236,6 +236,13 @@ type SharedTopicReason = IdempotentReason | UnsupportedReason | FailureReason | 
 type CommandPrivateReason =
   | "not found"
   | "not installed"
+  // SCOPE-01 / D-01: the cross-scope qualifier the lifecycle verbs join to
+  // `not installed` on an absent-target row. Owned by those verbs' own
+  // absent-target composer alongside `not installed`, so it is named here for
+  // the proof rather than promoted to a shared topic group. Unlike the three
+  // structural markers below it, this pair IS a `ContentReason`.
+  | "marketplace in user scope"
+  | "marketplace in project scope"
   | "plugins remain"
   | "stale clone"
   | "duplicate name"

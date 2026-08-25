@@ -84,6 +84,7 @@ import {
 } from "./enable-disable.messaging.ts";
 import { runInstallLedger } from "./install.ts";
 import {
+  absentTargetReasons,
   applyPartialCascadeFold,
   emitMarketplaceNotAdded,
   missIsNotInstalled,
@@ -195,7 +196,13 @@ type SetEnabledOutcome =
       version?: string;
     } & EnableDegradationSignals)
   | { kind: "invalid-config" }
-  | { kind: "not-recorded" }
+  /**
+   * SCOPE-01: `notInstalledAt` is set ONLY on the cross-scope arm -- the scope
+   * the operator named, whose marketplace container is registered one scope
+   * over. The in-scope arm (container here, plugin row absent) omits it, and
+   * the two arms then render different braces for their different remedies.
+   */
+  | { kind: "not-recorded"; notInstalledAt?: Scope }
   | {
       kind: "enable-failed";
       cause: Error;
@@ -570,7 +577,7 @@ async function emitUnresolvedTarget(args: {
     enable,
     // Only the `invalid-config` arm reads this, and `not-recorded` is not it.
     configBasename: "",
-    outcome: { kind: "not-recorded" },
+    outcome: { kind: "not-recorded", notInstalledAt },
   });
   return undefined;
 }
@@ -1246,19 +1253,24 @@ function composeOutcomeRow(args: {
         needsReload: false,
       };
     case "not-recorded":
-      // ATTR-08: the marketplace container is PRESENT but the plugin row is
-      // absent from state.json (never installed, or concurrently
-      // uninstalled). The established taxonomy (ATTR-08, reinstall/update
-      // precedent) reserves `{not in manifest}` for "plugin absent from a
-      // PRESENT manifest" and uses `(skipped) {not installed}` for
-      // "marketplace present, plugin not installed". Non-benign reason ->
-      // warning severity (catalog `enable-not-installed` state).
+      // ATTR-08: the plugin row is absent from state.json (never installed, or
+      // concurrently uninstalled). The established taxonomy (ATTR-08,
+      // reinstall/update precedent) reserves `{not in manifest}` for "plugin
+      // absent from a PRESENT manifest" and uses `(skipped) {not installed}`
+      // for "plugin not installed". SCOPE-01: when the container sits one scope
+      // over, the brace additionally names where it is.
       return {
         status: "skipped",
         name: plugin,
-        reasons: ["not installed"] as const,
-        // D-03/D-06: `not installed` is actionable -> warning, no reload.
-        severity: "warning",
+        reasons: absentTargetReasons(outcome.notInstalledAt),
+        // D-01: an absent target means nothing was enabled or disabled, so the
+        // operation was NOT carried out -> error. Severity is the tri-state
+        // axis (info = desired state reached, warning = carried out but short,
+        // error = not carried out), and `(skipped)` is the status token, not a
+        // severity: the same `["not installed"]` set is stamped `error` by
+        // `uninstall`'s `emitAlreadyGone`, `update`'s `cascadeSkipSeverity`,
+        // and `reinstall`'s in-scope skipped arm. No reload.
+        severity: "error",
         needsReload: false,
       };
     case "idempotent": {

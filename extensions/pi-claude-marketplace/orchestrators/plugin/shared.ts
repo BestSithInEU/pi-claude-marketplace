@@ -46,7 +46,7 @@ import type { ExtensionAPI, ExtensionContext } from "../../platform/pi-api.ts";
 import type { Dependency } from "../../shared/concerns/soft-dep.ts";
 import type { CommandContext } from "../../shared/notify-context.ts";
 import type { DegradeKind } from "../../shared/notify-reasons.ts";
-import type { PluginSkippedMessage } from "../../shared/notify.ts";
+import type { ContentReason, PluginSkippedMessage } from "../../shared/notify.ts";
 import type { Scope } from "../../shared/types.ts";
 
 /**
@@ -365,6 +365,39 @@ export async function missIsNotInstalled(opts: {
     scope: resolution.requestedScope,
   });
   return elsewhere ? resolution.requestedScope : undefined;
+}
+
+/**
+ * SCOPE-01 / D-01: the reason set every absent-target lifecycle row carries.
+ *
+ * Two misses used to render byte-identically. "The marketplace is here and you
+ * never installed this plugin" and "the marketplace is one scope over, so
+ * nothing of it is installed here" are different situations with different
+ * remedies -- install the plugin, versus target the other scope or add the
+ * marketplace at the one you named -- and a row that states neither cannot be
+ * acted on. The cross-scope arm names the container's actual scope; the
+ * in-scope arm stays the bare `{not installed}` it always was.
+ *
+ * `notInstalledAt` is `missIsNotInstalled`'s answer: the scope the operator
+ * NAMED, returned ONLY when the container is registered in the other one. Both
+ * of that helper's arms prove that placement -- `other-scope` found the plugin
+ * row itself under the sibling scope's container, and the `marketplace-absent`
+ * arm returns the scope only after `marketplaceInOtherScope` answered `true`.
+ * The token is therefore the FLIP of the argument, and it is derived from a
+ * probe already paid for; this helper adds no read of its own.
+ *
+ * `undefined` (the container is in the named scope, or both scopes were
+ * consulted and both missed) keeps the bare set.
+ */
+export function absentTargetReasons(notInstalledAt?: Scope): readonly ContentReason[] {
+  if (notInstalledAt === undefined) {
+    return ["not installed"];
+  }
+
+  return [
+    "not installed",
+    notInstalledAt === "user" ? "marketplace in project scope" : "marketplace in user scope",
+  ];
 }
 
 /**
@@ -1253,9 +1286,10 @@ export function emitMarketplaceNotAdded(args: {
  * Two arms, and which one fires is a property of the SIGNAL, not of the verb:
  *   - `notInstalledAt` + `plugin` set: the container sits one scope over, so
  *     nothing is installed at the scope the operator named. The PLUGIN is the
- *     subject -- the same `(skipped) {not installed}` row an in-scope
- *     marketplace with no record yields, because that is the identical
- *     underlying fact.
+ *     subject, on the same `(skipped)` row an in-scope marketplace with no
+ *     record yields -- but the brace names the container's actual scope beside
+ *     `not installed` (SCOPE-01, via `absentTargetReasons`), because the two
+ *     misses take different remedies and a shared byte form states neither.
  *   - otherwise: the marketplace row itself, `{marketplace not added}`
  *     (structural, no new REASONS member per D-47-B). `requestedScope` (when
  *     present) renders the `[scope]` bracket; the bare both-scopes-miss form
@@ -1270,9 +1304,9 @@ export function emitMarketplaceNotAdded(args: {
  * instead of an unchecked widening; a verb whose render map omits a `skipped`
  * arm is a compile error at ITS call site.
  *
- * SEV-04 / D-01: the row is stamped `error`. The reason set is the fixed
- * literal `["not installed"]` -- an absent target, i.e. the requested operation
- * was NOT carried out -- so both verbs' own skip-severity rules
+ * SEV-04 / D-01: the row is stamped `error`. Its reasons always lead with
+ * `not installed` -- an absent target, i.e. the requested operation was NOT
+ * carried out -- so both verbs' own skip-severity rules
  * (`update.ts::cascadeSkipSeverity`, `reinstall.ts`'s in-scope skipped arm)
  * collapse to the same constant here. Neither rule can be CALLED from this
  * module: both live in files that import this one, so reaching back for them
@@ -1296,7 +1330,7 @@ export async function emitMarketplaceNotAddedSignal(args: {
           {
             status: "skipped",
             name: err.plugin,
-            reasons: ["not installed"],
+            reasons: absentTargetReasons(err.notInstalledAt),
             severity: "error",
             needsReload: false,
           },

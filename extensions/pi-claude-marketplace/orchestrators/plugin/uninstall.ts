@@ -55,6 +55,7 @@ import { AgentsUnstageFailureError, cascadeUnstagePlugin } from "../marketplace/
 
 import { garbageCollectPluginClones } from "./clone-gc.ts";
 import {
+  absentTargetReasons,
   applyPartialCascadeFold,
   emitMarketplaceNotAdded,
   missIsNotInstalled,
@@ -451,6 +452,11 @@ async function runPostUninstallCleanup(
  * on, so it emits an error row (it was literal silence before). The row is
  * `failed` carrying the `not installed` reason -- uninstall's render map has
  * no `skipped` arm -- and carries no `cause`, so no path redaction applies.
+ *
+ * SCOPE-01: `notInstalledAt` separates the two callers. The cross-scope caller
+ * passes the scope the operator named, and the brace additionally names where
+ * the container really is; the in-scope PU-5 caller omits it, because the
+ * container IS here and the only remedy is to install.
  */
 function emitAlreadyGone(args: {
   readonly ctx: ExtensionContext;
@@ -459,6 +465,7 @@ function emitAlreadyGone(args: {
   readonly scope: Scope;
   readonly plugin: string;
   readonly orchestrated: boolean;
+  readonly notInstalledAt?: Scope;
 }): UninstallPluginOutcome | undefined {
   const { ctx, pi, marketplace, scope, plugin, orchestrated } = args;
   if (orchestrated) {
@@ -468,7 +475,7 @@ function emitAlreadyGone(args: {
   const failedRow: PluginFailedMessage = {
     status: "failed",
     name: plugin,
-    reasons: ["not installed"],
+    reasons: absentTargetReasons(args.notInstalledAt),
     severity: "error",
     needsReload: false,
   };
@@ -518,6 +525,7 @@ export async function uninstallPlugin(
         scope: notInstalledAt,
         plugin,
         orchestrated,
+        notInstalledAt,
       });
     }
 

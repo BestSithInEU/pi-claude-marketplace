@@ -173,6 +173,13 @@ test("COMPAT-01: REASONS holds exactly its inherited members, in order", () => {
       "malformed skill",
       "malformed command",
       "installs disabled",
+      // SCOPE-01 / D-01, post-COMPAT-01: the cross-scope CONTENT pair an
+      // absent-target lifecycle row joins to `not installed`. Amended in
+      // deliberately, like the two structural markers above -- and unlike them,
+      // these two stay inside `ContentReason`, because their subject is the
+      // plugin row they ride, not the marketplace.
+      "marketplace in user scope",
+      "marketplace in project scope",
     ],
     "COMPAT-01: no reason token may be added, removed, or renamed. The order is catalog-stable: a new token sits beside its structural siblings, not necessarily at the tail, and arrives with its catalog row, renderer arm, and fixture in the same change.",
   );

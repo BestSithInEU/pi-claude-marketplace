@@ -82,7 +82,7 @@ import type { Dependency } from "./concerns/soft-dep.ts";
  * at column 0 with severity `"error"`.
  *
  * D-09 / OUT-08: this tuple is the byte-source of the closed set -- its
- * 39-entry membership AND order are catalog-stable and MUST NOT change (new
+ * 43-entry membership AND order are catalog-stable and MUST NOT change (new
  * tokens append at the tail; existing entries never reorder). The
  * topic-grouped organization of these literals (idempotent / unsupported-
  * components / failure-class shared groups, plus the command-private reasons)
@@ -213,6 +213,26 @@ export const REASONS = [
   // D-95-02): a steady-state inventory row states durable facts about a record,
   // and a statement about an action not yet taken is not one of those.
   "installs disabled",
+  // SCOPE-01 / D-01: the marketplace container that holds this plugin IS
+  // registered -- in the scope the command did not target. A CONTENT reason,
+  // unlike the three `marketplace not added*` structural markers above: it
+  // makes no claim that the marketplace subject is absent, it explains why the
+  // PLUGIN subject beside it has no install record HERE. It therefore rides a
+  // plugin row, always joining `not installed` rather than replacing it, and
+  // stays inside `ContentReason`.
+  //
+  // The pair exists so the two absent-target misses stop rendering
+  // byte-identically. `{not installed}` alone means the container is right
+  // here and the remedy is to install the plugin; the joined form means the
+  // container is one scope over, so the remedy is to target that scope or add
+  // the marketplace at the one named. The token names the scope where the
+  // marketplace IS -- the OPPOSITE of the row's `[scope]` bracket, which names
+  // the scope that missed.
+  //
+  // Scope baked into the literal, not interpolated, for the same reason the
+  // structural siblings bake theirs: the closed set is a catalog of literals.
+  "marketplace in user scope",
+  "marketplace in project scope",
 ] as const;
 
 export type Reason = (typeof REASONS)[number];
@@ -226,6 +246,14 @@ export type Reason = (typeof REASONS)[number];
  * (TYPE-01). Retyping the row `reasons` fields to `readonly ContentReason[]`
  * makes a mixed `["marketplace not added", "permission denied"]` row a COMPILE error
  * rather than a render-time `length === 1` guard.
+ *
+ * SCOPE-01: `"marketplace in user scope"` / `"marketplace in project scope"`
+ * are deliberately NOT excluded. They mention a marketplace but their subject
+ * is the plugin row they ride: they say the container exists one scope over, so
+ * this plugin has no record HERE. That is a content claim about the plugin, and
+ * it composes with `"not installed"` instead of replacing it -- the exact
+ * opposite of the three structural markers, which replace one another and
+ * cannot share a row with anything.
  */
 export type ContentReason = Exclude<
   Reason,
