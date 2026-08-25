@@ -209,19 +209,21 @@ function flipContextFor(enable: boolean): typeof AUTOUPDATE_CONTEXT | typeof NOA
  * renderer's depth-5 cause-chain trailer (the MarketplaceNotificationMessage
  * header carries no `cause` per SNM-10).
  */
-async function notifyAutoupdateScopeFailure(
-  opts: AutoupdateOptions,
-  scope: Scope,
-  err: unknown,
-): Promise<void> {
+function notifyAutoupdateScopeFailure(opts: AutoupdateOptions, scope: Scope, err: unknown): void {
   const failureName = opts.name ?? "(unknown)";
 
   if (err instanceof MarketplaceNotFoundError) {
+    // CMP-4 / SCOPE-01: no `crossScopeFlag` probe. `shouldCollectNotFound`
+    // routes every NAMED `MarketplaceNotFoundError` into the collect path
+    // instead, so a `MarketplaceNotFoundError` reaching HERE implies
+    // `opts.name === undefined` and `failureName` is the `(unknown)`
+    // placeholder -- there is no marketplace name to look for in the sibling
+    // scope. The named single-flip miss keeps its probe at the
+    // `missingEverywhere` emission below.
     notify(opts.ctx, opts.pi, {
       kind: "marketplace-not-added",
       name: failureName,
       scope,
-      ...(await crossScopeFlag({ cwd: opts.cwd, marketplace: failureName, scope })),
     });
     return;
   }
@@ -511,7 +513,7 @@ export async function setMarketplaceAutoupdate(opts: AutoupdateOptions): Promise
       // the OTHER scope, so it is collected and surfaced only if BOTH scopes
       // failed AND no flip happened anywhere.
       if (!shouldCollectNotFound(opts, err)) {
-        await notifyAutoupdateScopeFailure(opts, scope, err);
+        notifyAutoupdateScopeFailure(opts, scope, err);
         return;
       }
 

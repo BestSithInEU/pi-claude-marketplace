@@ -489,6 +489,39 @@ test("ATTR-05: explicit-scope flip of a missing marketplace surfaces standalone 
   });
 });
 
+// CMP-4 / SCOPE-01: the qualified sibling of the ATTR-05 explicit-scope test
+// above. When the named marketplace IS added, just in the other scope, the row
+// says so -- the qualified token REPLACES the plain one rather than joining it,
+// because "the container does not exist" and "it exists, but not in the scope
+// you targeted" are competing claims about one subject. This is the user-target
+// direction: the container sits in project, the operator named user.
+//
+// The probe lives at the `missingEverywhere` emission -- the single-name flip
+// that missed in every iterated scope -- which is the only autoupdate site a
+// named marketplace can reach.
+test("CMP-4 / SCOPE-01: explicit --scope user flip of a project-only marketplace renders the user-direction qualified row", async () => {
+  await withHermeticHome(async ({ cwd }) => {
+    const projectLocations = locationsFor("project", cwd);
+    await mkdir(projectLocations.extensionRoot, { recursive: true });
+    await saveState(projectLocations.extensionRoot, {
+      schemaVersion: 1,
+      marketplaces: { mp: makeMarketplaceRecord("mp", "project", cwd, false) },
+    });
+
+    const { ctx, pi, notifications } = makeCtx();
+    await setMarketplaceAutoupdate({ ctx, pi, name: "mp", enable: true, scope: "user", cwd });
+
+    assert.equal(notifications.length, 1);
+    assert.equal(
+      notifications[0]!.message,
+      "A marketplace operation has failed.\n\n⊘ mp [user] (failed) {marketplace not added to user scope}",
+    );
+    assert.equal(notifications[0]!.severity, "error");
+    // The flip never reached the scope that DOES hold the record.
+    assert.equal(await configAutoupdate(projectLocations, "mp"), undefined);
+  });
+});
+
 function stripComments(src: string): string {
   return src
     .replace(/\/\*[\s\S]*?\*\//g, "") // block comments

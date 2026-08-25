@@ -152,6 +152,52 @@ test("ATTR-06 (S3): explicit --scope + name absent in that scope renders standal
   });
 });
 
+// CMP-4 / SCOPE-01: the qualified sibling of the S3 test above. When the named
+// marketplace IS added, just in the other scope, the row says so -- the
+// qualified token REPLACES the plain one rather than joining it, because "the
+// container does not exist" and "it exists, but not in the scope you targeted"
+// are competing claims about one subject. This is the project-target direction:
+// the container sits in user, the operator named project.
+test("CMP-4 / SCOPE-01: explicit --scope project against a user-only marketplace renders the project-direction qualified row", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "mp-remove-scope01-"));
+    try {
+      const userLoc = locationsFor("user", cwd);
+      await seedState(userLoc.extensionRoot, {
+        schemaVersion: 1,
+        marketplaces: {
+          mp: {
+            name: "mp",
+            scope: "user",
+            source: pathSource("./src"),
+            addedFromCwd: cwd,
+            manifestPath: path.join(cwd, "marketplace.json"),
+            marketplaceRoot: cwd,
+            plugins: {},
+          },
+        },
+      });
+
+      const { ctx, pi, notifications } = makeCtx();
+      await removeMarketplace({ ctx, pi, name: "mp", scope: "project", cwd });
+
+      assert.equal(notifications.length, 1);
+      assert.equal(
+        notifications[0]!.message,
+        "A marketplace operation has failed.\n\n⊘ mp [project] (failed) {marketplace not added to project scope}",
+      );
+      assert.equal(notifications[0]!.severity, "error");
+      // The miss is blocked by the pre-guard read, so the scope that DOES hold
+      // the record never enters a guard: removing from a scope the operator did
+      // not name would be the worst possible reading of this command.
+      const userAfter = await loadState(userLoc.extensionRoot);
+      assert.ok("mp" in userAfter.marketplaces, "user-scope record NOT removed");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
 // MR-1 ambiguous (dual-scope seed) ----------------------------------
 
 test("MR-1: same name in both scopes without --scope removes project-scope record (CMP-5 precedence)", async () => {

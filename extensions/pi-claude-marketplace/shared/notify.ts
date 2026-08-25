@@ -140,10 +140,7 @@ export const REASONS = [
   // so a plugin row must not be able to carry it.
   //
   // The scope is baked into the token rather than interpolated because the
-  // closed set is a catalog of literals. Only the user-target direction is
-  // reachable today -- `marketplaceInOtherScope` returns false unless the
-  // target scope is `user` -- so the `project` sibling is deliberately NOT
-  // declared until a caller can render it.
+  // closed set is a catalog of literals.
   "marketplace not added to user scope",
   // CMP-4 / SCOPE-01: the project-target direction of the same claim. Declared
   // as its own literal because the closed set is a catalog of literals, not a

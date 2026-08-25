@@ -117,7 +117,6 @@ import {
 } from "../../transaction/with-state-guard.ts";
 import { DEFAULT_CREDENTIAL_OPS, buildCloneAuth } from "../auth-host.ts";
 import { resolveScopeFromState } from "../marketplace/shared.ts";
-import { crossScopeFlag } from "../marketplace/shared.ts";
 
 import { canonicalCloneUrl, materializePluginClone, resolveGitSubdirRoot } from "./clone-cache.ts";
 import { discoverGeneratedNames } from "./discover-names.ts";
@@ -130,6 +129,7 @@ import {
 } from "./reinstall.messaging.ts";
 import {
   assertNoCrossPluginConflicts,
+  emitMarketplaceNotAddedSignal,
   MarketplaceNotAddedSignal,
   missIsNotInstalled,
   maybeWritePluginConfigBack,
@@ -637,11 +637,11 @@ function surfaceReinstallDiscoveryWarnings(
  * Two arms:
  *   - ATTR-03 / D-47-A marketplace-not-added: the enumerator raised the
  *     structural `MarketplaceNotAddedSignal` (instead of synthesizing a phantom
- *     target or throwing a raw `MarketplaceNotFoundError`/`Error`). Emit ONE
- *     standalone top-level `MarketplaceNotAddedMessage` -- byte-identical to
- *     `info` and the install/uninstall plan (47-01) -- BEFORE any cascade row
- *     exists. The `requestedScope` (when present) renders the `[scope]` bracket
- *     (SCOPE-01); the bare both-scopes-miss form carries no bracket.
+ *     target or throwing a raw `MarketplaceNotFoundError`/`Error`). Delegated to
+ *     the shared `emitMarketplaceNotAddedSignal`, which update drives with ITS
+ *     context off the same signal -- one emitter, so the SCOPE-01 plugin row
+ *     and the `{marketplace not added}` marketplace row cannot drift between
+ *     the two verbs.
  *   - Any other enumeration failure: the legacy synthetic `(reinstall)` failed
  *     row. The failed entity is the targeting layer (no specific plugin), so
  *     the row carries a placeholder name `"(reinstall)"` under a synthetic
@@ -657,39 +657,7 @@ async function handleEnumerationFailure(
   const { ctx, pi, cwd } = opts;
 
   if (err instanceof MarketplaceNotAddedSignal) {
-    // SCOPE-01: the container sits one scope over, so nothing is installed at
-    // the scope the operator named. The PLUGIN is the subject -- the same
-    // `(skipped) {not installed}` row an in-scope marketplace with no record
-    // yields, because that is the identical underlying fact.
-    if (err.notInstalledAt !== undefined && err.plugin !== undefined) {
-      notifyWithContext(ctx, pi, REINSTALL_CONTEXT, [
-        {
-          name: err.marketplace,
-          scope: err.notInstalledAt,
-          plugins: [
-            {
-              status: "skipped",
-              name: err.plugin,
-              reasons: ["not installed"],
-              severity: "warning",
-              needsReload: false,
-            },
-          ],
-        },
-      ]);
-      return;
-    }
-
-    notify(ctx, pi, {
-      kind: "marketplace-not-added",
-      name: err.marketplace,
-      ...(err.requestedScope !== undefined && { scope: err.requestedScope }),
-      ...(await crossScopeFlag({
-        cwd,
-        marketplace: err.marketplace,
-        scope: err.requestedScope,
-      })),
-    });
+    await emitMarketplaceNotAddedSignal({ ctx, pi, cwd, context: REINSTALL_CONTEXT, err });
     return;
   }
 

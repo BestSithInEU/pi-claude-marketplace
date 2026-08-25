@@ -131,7 +131,7 @@ import { narrowUnsupportedKinds } from "../../shared/probe-classifiers.ts";
 import { withLockedStateTransaction, withStateGuard } from "../../transaction/with-state-guard.ts";
 import { DEFAULT_CREDENTIAL_OPS, buildAuthForHost, hostFromCloneUrl } from "../auth-host.ts";
 import { DEFAULT_GIT_OPS, refreshGitHubClone, type GitOps } from "../marketplace/shared.ts";
-import { crossScopeFlag, marketplaceInOtherScope } from "../marketplace/shared.ts";
+import { marketplaceInOtherScope } from "../marketplace/shared.ts";
 
 import {
   canonicalCloneUrl,
@@ -144,8 +144,8 @@ import { garbageCollectPluginClones } from "./clone-gc.ts";
 import { discoverGeneratedNames } from "./discover-names.ts";
 import {
   assertNoCrossPluginConflicts,
+  emitMarketplaceNotAddedSignal,
   MarketplaceNotAddedSignal,
-  missIsNotInstalled,
   maybeWritePluginConfigBack,
   removePluginRecord,
   resolveInstalledMarketplaceTarget,
@@ -504,11 +504,10 @@ function surfaceUpdateDiscoveryWarnings(
  *   - ATTR-02 / D-47-A marketplace-not-added: `enumerateMarketplaceTarget`
  *     raised the structural `MarketplaceNotAddedSignal` (instead of the former
  *     raw `Error`/`MarketplaceNotFoundError` -> `{not found}` misattribution).
- *     Emit ONE standalone top-level `MarketplaceNotAddedMessage` -- byte-
- *     identical to `info` and the install/uninstall/reinstall plans -- BEFORE
- *     any cascade row exists. `requestedScope` (when present) renders the
- *     `[scope]` bracket (SCOPE-01); the bare both-scopes-miss form carries no
- *     bracket. Structural `{marketplace not added}`, no new REASONS member (D-47-B).
+ *     Delegated to the shared `emitMarketplaceNotAddedSignal`, which reinstall
+ *     drives with ITS context off the same signal -- one emitter, so the
+ *     SCOPE-01 plugin row and the `{marketplace not added}` marketplace row
+ *     cannot drift between the two verbs.
  *   - bare form (`target.kind === "all"`): WR-05 -- no marketplace identity to
  *     thread; surface via `notifyBareFormEnumerateFailure`.
  *   - `marketplace` / `plugin`: Option B synthetic `PluginFailedMessage` under
@@ -519,39 +518,7 @@ async function handleEnumerateFailure(opts: UpdatePluginsOptions, err: unknown):
   const { ctx, pi, cwd, target, scope: explicitScope } = opts;
 
   if (err instanceof MarketplaceNotAddedSignal) {
-    // SCOPE-01: the container sits one scope over, so nothing is installed at
-    // the scope the operator named. The PLUGIN is the subject -- the same
-    // `(skipped) {not installed}` row an in-scope marketplace with no record
-    // yields, because that is the identical underlying fact.
-    if (err.notInstalledAt !== undefined && err.plugin !== undefined) {
-      notifyWithContext(ctx, pi, UPDATE_CONTEXT, [
-        {
-          name: err.marketplace,
-          scope: err.notInstalledAt,
-          plugins: [
-            {
-              status: "skipped",
-              name: err.plugin,
-              reasons: ["not installed"],
-              severity: "warning",
-              needsReload: false,
-            },
-          ],
-        },
-      ]);
-      return;
-    }
-
-    notify(ctx, pi, {
-      kind: "marketplace-not-added",
-      name: err.marketplace,
-      ...(err.requestedScope !== undefined && { scope: err.requestedScope }),
-      ...(await crossScopeFlag({
-        cwd,
-        marketplace: err.marketplace,
-        scope: err.requestedScope,
-      })),
-    });
+    await emitMarketplaceNotAddedSignal({ ctx, pi, cwd, context: UPDATE_CONTEXT, err });
     return;
   }
 
@@ -3190,6 +3157,14 @@ async function enumerateMarketplaceTarget(
     // as well as the concurrent-removal edge. Either way it signals not-added
     // rather than letting a raw throw escape the orchestrator.
     //
+    // The everyday route in is the PLUGIN form with an explicit `--scope`:
+    // `resolveInstalledPluginTarget` returns that scope UNCONDITIONALLY when
+    // one is named, without proving the container is there, so the miss lands
+    // here rather than on the marketplace-absent arm of the resolver. (Every
+    // `resolved` arm of `resolveInstalledMarketplaceTarget` HAS proved a
+    // container, which is why that route in really is a concurrent removal.)
+    // This is the only place the explicit-scope SCOPE-01 payload can be built.
+    //
     // SCOPE-01: when the container sits one scope over, nothing is installed at
     // the scope the operator named, so the PLUGIN is the row's subject.
     const notInstalled =
@@ -3269,19 +3244,16 @@ async function resolveUpdateMarketplaceScope(
   // SCOPE-01: carry the REQUESTED scope (explicit form) so the `[scope]`
   // bracket reads "not added in the scope you asked for"; the bare form that
   // missed everywhere carries no bracket (resolution.requestedScope undefined).
-  // SCOPE-01: a container one scope over means nothing is installed HERE, so
-  // the row's subject is the plugin, not the marketplace.
-  const notInstalledAt =
-    target.kind === "plugin"
-      ? await missIsNotInstalled({ cwd, marketplace: mpName, resolution })
-      : undefined;
-  throw new MarketplaceNotAddedSignal(
-    mpName,
-    resolution.requestedScope,
-    notInstalledAt === undefined || target.kind !== "plugin"
-      ? undefined
-      : { scope: notInstalledAt, plugin: target.plugin },
-  );
+  //
+  // No SCOPE-01 `notInstalled` payload is derivable HERE, and none is owed. The
+  // plugin form reaches this line only with NO explicit scope -- an explicit
+  // scope makes `resolveInstalledPluginTarget` return it unconditionally above
+  // -- so `resolveInstalledMarketplaceTarget` took its unqualified branch,
+  // which consulted BOTH scopes and therefore reports `marketplace-absent` with
+  // no `requestedScope`. There is no "one scope over" to name. The explicit-
+  // scope plugin form is carried by the `mp === undefined` arm in
+  // `enumerateMarketplaceTarget`, which is where that payload is built.
+  throw new MarketplaceNotAddedSignal(mpName, resolution.requestedScope);
 }
 
 async function loadCachedMarketplaceManifest(

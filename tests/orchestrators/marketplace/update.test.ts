@@ -2125,6 +2125,34 @@ test("updateMarketplace: explicit-scope missing marketplace -> standalone {marke
   });
 });
 
+// CMP-4 / SCOPE-01: the qualified sibling of the test above. When the named
+// marketplace IS added, just in the other scope, the row says so -- `{marketplace
+// not added to user scope}` REPLACES the plain token rather than joining it,
+// because "the container does not exist" and "it exists, but not where you
+// asked" are competing claims about one subject. This is the user-target
+// direction: the container sits in project, the operator named user.
+test("CMP-4 / SCOPE-01: explicit --scope user against a project-only marketplace renders the user-direction qualified row", async () => {
+  await withHermeticHome(async ({ cwd }) => {
+    // seedGithubMarketplace seeds the PROJECT scope; ask for USER explicitly.
+    await seedGithubMarketplace({ cwd, name: "mp" });
+    const { ctx, pi, notifications } = makeCtx();
+    const { gitOps } = makeMockGitOps();
+
+    await updateMarketplace({ ctx, pi, name: "mp", scope: "user", cwd, gitOps });
+
+    assert.equal(notifications.length, 1);
+    assert.equal(
+      notifications[0]?.message,
+      "A marketplace operation has failed.\n\n⊘ mp [user] (failed) {marketplace not added to user scope}",
+    );
+    assert.equal(notifications[0]?.severity, "error");
+    // The scope that DOES hold the record is untouched -- the miss is blocked
+    // by the pre-guard read, so no guard is ever entered.
+    const projectAfter = await loadState(locationsFor("project", cwd).extensionRoot);
+    assert.ok(projectAfter.marketplaces["mp"] !== undefined, "project record retained");
+  });
+});
+
 test("CR-01 TOCTOU: refreshOneMarketplace silently no-ops on a removed marketplace -- no `{network unreachable}`, no second notification", async () => {
   // End-to-end companion to the seam test: drive updateMarketplace with state
   // whose marketplace exists at the pre-guard read but whose guard-time fresh

@@ -82,21 +82,15 @@ interface GrammarFixture {
   readonly message: NotificationMessage;
 }
 
-const FIXTURES: readonly GrammarFixture[] = [
+// CMP-4 / SCOPE-01: both directions of the cross-scope arm. Held in their own
+// array (and spread into FIXTURES below) so the scope-agreement test can iterate
+// exactly the fixtures whose brace carries a baked-in scope word.
+const CROSS_SCOPE_FIXTURES: readonly GrammarFixture[] = [
   {
-    label: "standalone marketplace-not-added (marketplace subject)",
-    pi: piWithBothLoaded(),
-    message: {
-      kind: "marketplace-not-added",
-      name: "ghost-mp",
-      scope: "project",
-    },
-  },
-  {
-    // CMP-4 / SCOPE-01: the cross-scope arm stays a TWO-block surface -- the
-    // structural token rides the detail row's brace, so no third block is
-    // introduced. The summary must still be the first line and still be
-    // distinct from the detail block.
+    // The cross-scope arm stays a TWO-block surface -- the structural token
+    // rides the detail row's brace, so no third block is introduced. The
+    // summary must still be the first line and still be distinct from the
+    // detail block.
     label: "standalone marketplace-not-added carrying the cross-scope reason token",
     pi: piWithBothLoaded(),
     message: {
@@ -118,6 +112,19 @@ const FIXTURES: readonly GrammarFixture[] = [
       presentInOtherScope: true,
     },
   },
+];
+
+const FIXTURES: readonly GrammarFixture[] = [
+  {
+    label: "standalone marketplace-not-added (marketplace subject)",
+    pi: piWithBothLoaded(),
+    message: {
+      kind: "marketplace-not-added",
+      name: "ghost-mp",
+      scope: "project",
+    },
+  },
+  ...CROSS_SCOPE_FIXTURES,
   {
     label: "standalone failed plugin-info (plugin subject, multi-line body)",
     pi: piWithBothLoaded(),
@@ -611,6 +618,35 @@ test("GRAM-01/04/05: every error/warning emission has a non-empty summary first 
       detailBlock,
       firstLine,
       `${fixture.label}: the detail block must be distinct from the summary first line`,
+    );
+  }
+});
+
+// CMP-4 / SCOPE-01: the scope word BAKED INTO the reason token names the scope
+// that missed, which is the same scope the `[bracket]` beside it renders. The
+// two are derived independently -- the bracket from `message.scope`, the token
+// by `notAddedReasonFor`'s arm selection -- so swapping those arms would render
+// `⊘ mp [user] (failed) {marketplace not added to project scope}` and every
+// shape-level assertion in this file would stay green. This is the assertion
+// that catches it.
+test("CMP-4 / SCOPE-01: the scope word inside the reason brace equals the scope inside the row bracket", () => {
+  for (const fixture of CROSS_SCOPE_FIXTURES) {
+    const ctx = makeCtx();
+    notify(ctx as never, fixture.pi as never, fixture.message);
+    const args = ctx.ui.notify.mock.calls[0]!.arguments as [string, string?];
+    const emitted = args[0];
+    const row = emitted.slice(emitted.indexOf("\n\n") + 2);
+
+    const bracket = /\[(user|project)\]/.exec(row);
+    assert.ok(bracket, `${fixture.label}: the row must carry a [scope] bracket; got '${row}'`);
+
+    const token = /\{marketplace not added to (user|project) scope\}/.exec(row);
+    assert.ok(token, `${fixture.label}: the brace must carry the qualified token; got '${row}'`);
+
+    assert.equal(
+      token[1],
+      bracket[1],
+      `${fixture.label}: the baked-in scope word must track the bracket, never contradict it; got '${row}'`,
     );
   }
 });

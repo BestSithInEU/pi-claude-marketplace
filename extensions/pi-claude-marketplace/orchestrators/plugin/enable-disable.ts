@@ -548,10 +548,9 @@ async function emitUnresolvedTarget(args: {
 
   const notInstalledAt = await missIsNotInstalled({ cwd, marketplace, resolution });
   if (notInstalledAt === undefined) {
-    return await emitMarketplaceNotAdded({
+    return emitMarketplaceNotAdded({
       ctx,
       pi,
-      cwd,
       marketplace,
       requestedScope: resolution.requestedScope,
       orchestrated,

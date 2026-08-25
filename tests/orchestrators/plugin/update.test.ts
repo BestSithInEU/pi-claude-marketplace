@@ -1741,11 +1741,14 @@ test("SCOPE-01 @<mp>: marketplace present only in other scope -> scope-qualified
 });
 
 // SCOPE-01: explicit-scope `<plugin>@<mp>` against a marketplace present ONLY in
-// the other scope -> standalone `{marketplace not added}` carrying the REQUESTED scope
-// bracket. The plugin form reaches this via `resolveInstalledPluginTarget`
-// returning the explicit scope blindly, then `enumerateMarketplaceTarget`
-// finding `mp === undefined` for that scope and raising the signal -- the
-// companion of the `@<mp>` form test above (WR-01 gap closure).
+// the other scope -> the PLUGIN row `(skipped) {not installed}` under the
+// REQUESTED scope bracket, NOT the marketplace row the `@<mp>` form emits: the
+// container sits one scope over, so nothing is installed at the scope named.
+// The plugin form reaches this via `resolveInstalledPluginTarget` returning the
+// explicit scope blindly, then `enumerateMarketplaceTarget` finding
+// `mp === undefined` for that scope and raising the signal -- the companion of
+// the `@<mp>` form test above (WR-01 gap closure). SEV-04 / D-01: an absent
+// target means the operation was NOT carried out, so the row is `error`.
 test("SCOPE-01 <plugin>@<mp>: marketplace present only in other scope -> (skipped) {not installed}", async () => {
   await withHermeticHome(async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "update-scope01-plugin-other-"));
@@ -1769,10 +1772,10 @@ test("SCOPE-01 <plugin>@<mp>: marketplace present only in other scope -> (skippe
       });
 
       assert.equal(notifications.length, 1);
-      assert.equal(notifications[0]?.severity, "warning");
+      assert.equal(notifications[0]?.severity, "error");
       assert.equal(
         notifications[0]?.message,
-        "A plugin operation needs attention.\n\n● mp [user]\n  ⊘ hello (skipped) {not installed}",
+        "A plugin operation has failed.\n\n● mp [user]\n  ⊘ hello (skipped) {not installed}",
       );
     } finally {
       await rm(cwd, { recursive: true, force: true });

@@ -88,10 +88,13 @@ async function withHermeticHome<T>(
   }
 }
 
-// Construct a state.json for the user scope where a marketplace `mp` contains
-// a plugin `foo` in the requested shape (populated vs. disabled).
-async function writeUserState(
-  home: string,
+// Construct a state.json for `scopeRoot` where a marketplace `mp` contains
+// a plugin `foo` in the requested shape (populated vs. disabled). `scope` is
+// stamped into the marketplace record so a project-scope seed does not carry a
+// `user` self-description.
+async function writeScopedState(
+  scopeRoot: string,
+  scope: "user" | "project",
   opts: {
     marketplaceName: string;
     pluginName: string;
@@ -109,7 +112,6 @@ async function writeUserState(
     unsupported?: readonly string[];
   },
 ): Promise<{ statePath: string; configPath: string; configLocalPath: string; scopeRoot: string }> {
-  const scopeRoot = path.join(home, ".pi", "agent");
   const extRoot = path.join(scopeRoot, "pi-claude-marketplace");
   await mkdir(extRoot, { recursive: true });
   const statePath = path.join(extRoot, "state.json");
@@ -136,7 +138,7 @@ async function writeUserState(
     marketplaces: {
       [opts.marketplaceName]: {
         name: opts.marketplaceName,
-        scope: "user",
+        scope,
         source: {
           kind: "path" as const,
           raw: "/tmp/dummy-mp",
@@ -166,6 +168,22 @@ async function writeUserState(
   };
   await writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
   return { statePath, configPath, configLocalPath, scopeRoot };
+}
+
+/** The user-scope seed every pre-existing fixture in this file uses. */
+async function writeUserState(
+  home: string,
+  opts: Parameters<typeof writeScopedState>[2],
+): Promise<Awaited<ReturnType<typeof writeScopedState>>> {
+  return await writeScopedState(path.join(home, ".pi", "agent"), "user", opts);
+}
+
+/** SCOPE-01: the same record shape seeded into the PROJECT scope (`<cwd>/.pi`). */
+async function writeProjectState(
+  cwd: string,
+  opts: Parameters<typeof writeScopedState>[2],
+): Promise<Awaited<ReturnType<typeof writeScopedState>>> {
+  return await writeScopedState(path.join(cwd, ".pi"), "project", opts);
 }
 
 async function readConfig(configPath: string): Promise<unknown> {
@@ -1836,10 +1854,160 @@ test("Marketplace not added: explicit --scope emits standalone marketplace-not-a
     });
     assert.equal(notifications.length, 1);
     assert.equal(notifications[0]!.severity, "error");
-    assert.match(
+    // Byte-exact, like every sibling verb: a substring match would stay green
+    // with the `A marketplace operation has failed.` summary line missing or
+    // wrong, and that summary line is half of what the two-block shape asserts.
+    assert.equal(
       notifications[0]!.message,
-      /⊘ ghost-mp \[user\] \(failed\) \{marketplace not added\}/,
+      "A marketplace operation has failed.\n\n⊘ ghost-mp [user] (failed) {marketplace not added}",
     );
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// SCOPE-01: the cross-scope miss (`emitUnresolvedTarget`)
+//
+// The marketplace container sits ONE SCOPE OVER from the scope the operator
+// named, so nothing is installed at the named scope. The PLUGIN is the row's
+// subject -- the same `(skipped) {not installed}` an in-scope marketplace with
+// no plugin record yields (the WR-03 row above), because that is the identical
+// underlying fact. The `{marketplace not added...}` marketplace row is reserved
+// for a container absent from BOTH scopes, so a typo'd marketplace name is not
+// disguised as a plugin that merely is not installed.
+//
+// Both verbs are pinned separately because they render through SEPARATE
+// contexts (ENABLE_CONTEXT / DISABLE_CONTEXT, D-10). Their `skipped` render
+// arms are byte-identical today and the summary line carries no verb label, so
+// the two expected strings agree -- pinning both is what would catch one arm
+// drifting away from the other.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("SCOPE-01: enable of a target whose marketplace sits in the OTHER scope renders the plugin row, not the marketplace row", async () => {
+  await withHermeticHome(async ({ cwd, home }) => {
+    // Container + plugin in USER; the operator names PROJECT.
+    await writeUserState(home, { marketplaceName: "mp", pluginName: "foo", disabled: false });
+    const { ctx, notifications } = makeCtx(cwd);
+    await setPluginEnabled({
+      ctx,
+      pi: makePi(),
+      cwd,
+      marketplace: "mp",
+      plugin: "foo",
+      enable: true,
+      scope: "project",
+    });
+    assert.equal(notifications.length, 1);
+    assert.equal(
+      notifications[0]!.message,
+      "A plugin operation needs attention.\n\n● mp [project]\n  ⊘ foo (skipped) {not installed}",
+    );
+    assert.equal(notifications[0]!.severity, "warning");
+    // SCOPE-01 negative invariant: enable must NEVER render the scope-qualified
+    // marketplace token. `missIsNotInstalled` is consulted BEFORE
+    // `emitMarketplaceNotAdded`, and reordering the two would silently turn
+    // this row into `⊘ mp [project] (failed) {marketplace not added to project
+    // scope}` -- a complaint about the container the operator cannot act on.
+    assert.ok(
+      !notifications[0]!.message.includes("marketplace not added to"),
+      `enable must not blame the marketplace on a cross-scope miss: ${notifications[0]!.message}`,
+    );
+  });
+});
+
+test("SCOPE-01: disable of a target whose marketplace sits in the OTHER scope renders the plugin row, not the marketplace row", async () => {
+  await withHermeticHome(async ({ cwd, home }) => {
+    await writeUserState(home, { marketplaceName: "mp", pluginName: "foo", disabled: false });
+    const { ctx, notifications } = makeCtx(cwd);
+    await setPluginEnabled({
+      ctx,
+      pi: makePi(),
+      cwd,
+      marketplace: "mp",
+      plugin: "foo",
+      enable: false,
+      scope: "project",
+    });
+    assert.equal(notifications.length, 1);
+    assert.equal(
+      notifications[0]!.message,
+      "A plugin operation needs attention.\n\n● mp [project]\n  ⊘ foo (skipped) {not installed}",
+    );
+    assert.equal(notifications[0]!.severity, "warning");
+    // SCOPE-01 negative invariant, disable's own context (see the enable twin).
+    assert.ok(
+      !notifications[0]!.message.includes("marketplace not added to"),
+      `disable must not blame the marketplace on a cross-scope miss: ${notifications[0]!.message}`,
+    );
+  });
+});
+
+test("SCOPE-01: the user-direction miss (container in PROJECT, --scope user) renders the same plugin row under the [user] bracket", async () => {
+  await withHermeticHome(async ({ cwd }) => {
+    // The mirrored direction: container + plugin in PROJECT, operator names USER.
+    // The bracket follows the REQUESTED scope, not the scope that holds the
+    // container -- the operator is told nothing is installed where they asked.
+    await writeProjectState(cwd, { marketplaceName: "mp", pluginName: "foo", disabled: false });
+    const { ctx, notifications } = makeCtx(cwd);
+    await setPluginEnabled({
+      ctx,
+      pi: makePi(),
+      cwd,
+      marketplace: "mp",
+      plugin: "foo",
+      enable: true,
+      scope: "user",
+    });
+    assert.equal(notifications.length, 1);
+    assert.equal(
+      notifications[0]!.message,
+      "A plugin operation needs attention.\n\n● mp [user]\n  ⊘ foo (skipped) {not installed}",
+    );
+    assert.equal(notifications[0]!.severity, "warning");
+    assert.ok(
+      !notifications[0]!.message.includes("marketplace not added to"),
+      `enable must not blame the marketplace on a cross-scope miss: ${notifications[0]!.message}`,
+    );
+  });
+});
+
+// SCOPE-01 / RECON-03: the ORCHESTRATED-mode behaviour change, recorded as
+// INTENT rather than discovered as a regression.
+//
+// Before the cross-scope remedy this miss returned
+// `{ status: "failed", reason: "marketplace not added" }`, which `apply.ts`
+// materializes into a visible reconcile row. It now returns the `skipped`
+// arm, and `apply.ts` DROPS skipped rows -- so a hand-edited config naming a
+// plugin whose marketplace is registered one scope over goes quiet on
+// /reload instead of reporting a marketplace the operator cannot fix from
+// that scope. That is the intended behaviour: it matches the pre-existing
+// `not installed` converge for an in-scope marketplace with no plugin record.
+//
+// The pre-existing orchestrated tests above use a marketplace absent from BOTH
+// scopes, so they land on the marketplace-not-added arm and cannot see this.
+test("SCOPE-01 / RECON-03 (intended): orchestrated enable AND disable of an other-scope-only target return { status: 'skipped', reason: 'not installed' } with ZERO notifications", async () => {
+  await withHermeticHome(async ({ cwd, home }) => {
+    await writeUserState(home, { marketplaceName: "mp", pluginName: "foo", disabled: false });
+
+    for (const enable of [true, false]) {
+      const { ctx, notifications } = makeCtx(cwd);
+      const outcome = await setPluginEnabled({
+        ctx,
+        pi: makePi(),
+        cwd,
+        marketplace: "mp",
+        plugin: "foo",
+        enable,
+        scope: "project",
+        notifications: { mode: "orchestrated" },
+      });
+
+      assert.equal(notifications.length, 0, "orchestrated mode must not fire notifications");
+      assert.equal(outcome.status, "skipped", `enable=${enable}`);
+      if (outcome.status === "skipped") {
+        assert.equal(outcome.name, "foo");
+        assert.equal(outcome.reason, "not installed");
+      }
+    }
   });
 });
 
@@ -2003,9 +2171,11 @@ test("RECON-03 enable-disable standalone-default mode -- omitted notifications o
     });
     assert.equal(outcome, undefined, "standalone (omitted) returns undefined");
     assert.equal(notifications.length, 1);
-    assert.match(
+    // Byte-identical: the point of this regression guard is the WHOLE string,
+    // summary line included, so it must not be a substring match.
+    assert.equal(
       notifications[0]!.message,
-      /⊘ ghost-mp-byte \[user\] \(failed\) \{marketplace not added\}/,
+      "A marketplace operation has failed.\n\n⊘ ghost-mp-byte [user] (failed) {marketplace not added}",
     );
   });
 });

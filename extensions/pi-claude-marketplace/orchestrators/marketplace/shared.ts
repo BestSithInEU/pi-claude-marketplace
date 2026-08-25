@@ -35,7 +35,8 @@ import { unstagePluginSkills } from "../../bridges/skills/index.ts";
 import { locationsFor } from "../../persistence/locations.ts";
 import { loadState } from "../../persistence/state-io.ts";
 import * as defaultGit from "../../platform/git.ts";
-import { isErrnoException, MarketplaceNotFoundError } from "../../shared/errors.ts";
+import { hookDebugLog } from "../../shared/debug-log.ts";
+import { errorMessage, isErrnoException, MarketplaceNotFoundError } from "../../shared/errors.ts";
 import { notify } from "../../shared/notify.ts";
 
 import type { UnstageAgentFailure } from "../../bridges/agents/types.ts";
@@ -541,7 +542,11 @@ export async function resolveScopeOrNotifyNotAdded(
   const preState = await loadState(locations.extensionRoot);
   if (preState.marketplaces[opts.name] === undefined) {
     const otherLocations = opts.scope === "user" ? projectLocations : userLocations;
-    const elsewhere = await marketplaceRecordedIn(otherLocations, opts.name);
+    const elsewhere = await marketplaceRecordedIn(
+      otherLocations.scope,
+      () => otherLocations,
+      opts.name,
+    );
     notify(opts.ctx, opts.pi, {
       kind: "marketplace-not-added",
       name: opts.name,
@@ -680,7 +685,13 @@ export function narrowCascadeFailure(cause: Error): ContentReason {
  * than losing the failure row, so an unreadable other scope degrades to the
  * plain `{marketplace not added}` token.
  *
- * Read-only, no network (NFR-5), no mutation.
+ * Read-only and network-free (NFR-5), but NOT side-effect-free: `loadState`
+ * normalizes a legacy record in place and fires a fire-and-forget
+ * `persistMigratedState` write (ST-4) when it does. Probing the sibling scope
+ * can therefore rewrite that scope's `state.json` to the current schema. The
+ * write is best-effort and never observed here -- a failure surfaces through
+ * the IL-3 sanctioned warn inside `persistMigratedState`, not through this
+ * function's `boolean`.
  */
 export async function marketplaceInOtherScope(opts: {
   readonly cwd: string;
@@ -688,21 +699,39 @@ export async function marketplaceInOtherScope(opts: {
   readonly scope: Scope;
 }): Promise<boolean> {
   const other: Scope = opts.scope === "user" ? "project" : "user";
-  return await marketplaceRecordedIn(locationsFor(other, opts.cwd), opts.marketplace);
+  return await marketplaceRecordedIn(other, () => locationsFor(other, opts.cwd), opts.marketplace);
 }
 
 /**
- * CMP-4 / SCOPE-01: is `name` recorded in the state file under `locations`?
+ * CMP-4 / SCOPE-01: is `name` recorded in the state file of `scope`?
  *
  * NEVER throws -- see `marketplaceInOtherScope`. `false` on any read failure,
  * which degrades the row to the plain `{marketplace not added}` token rather
  * than taking the failure row down with it.
+ *
+ * `resolveLocations` is a thunk rather than a `ScopedLocations` value so that
+ * callers which must BUILD the bundle do it INSIDE this try: `locationsFor`
+ * calls the host's `getAgentDir()`, so it is itself part of the surface the
+ * never-throws contract has to cover. Callers holding a bundle already proven
+ * safe pass `() => bundle`.
+ *
+ * The swallow is deliberate but not silent: the discarded cause is the only
+ * answer to "why did the cross-scope hint never appear", so it is filed to the
+ * debug channel before `false` is returned.
  */
-async function marketplaceRecordedIn(locations: ScopedLocations, name: string): Promise<boolean> {
+async function marketplaceRecordedIn(
+  scope: Scope,
+  resolveLocations: () => ScopedLocations,
+  name: string,
+): Promise<boolean> {
   try {
-    const state = await loadState(locations.extensionRoot);
+    const state = await loadState(resolveLocations().extensionRoot);
     return state.marketplaces[name] !== undefined;
-  } catch {
+  } catch (err) {
+    hookDebugLog(
+      `cross-scope probe for "${name}" in ${scope} scope failed: ${errorMessage(err)}`,
+      "scope",
+    );
     return false;
   }
 }

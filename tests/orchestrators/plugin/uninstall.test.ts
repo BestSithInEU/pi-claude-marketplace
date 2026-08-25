@@ -646,6 +646,16 @@ test("SCOPE-01: explicit-scope uninstall of an other-scope-only target -> LOUD (
         notifications[0]?.message,
         "A plugin operation has failed.\n\n● mp [project]\n  ⊘ hello (failed) {not installed}",
       );
+      // SCOPE-01 negative invariant: uninstall must NEVER render the
+      // scope-qualified marketplace token. `missIsNotInstalled` is consulted
+      // BEFORE `emitMarketplaceNotAdded`, and reordering the two would silently
+      // turn this row into `⊘ mp [project] (failed) {marketplace not added to
+      // project scope}` -- a complaint about the container, which is not what
+      // the operator can act on and would not make the uninstall succeed.
+      assert.ok(
+        !(notifications[0]?.message ?? "").includes("marketplace not added to"),
+        `uninstall must not blame the marketplace on a cross-scope miss: ${notifications[0]?.message ?? ""}`,
+      );
       const userAfter = await loadState(userLocations.extensionRoot);
       assert.ok("hello" in (userAfter.marketplaces["mp"]?.plugins ?? {}), "user record retained");
     } finally {
@@ -1630,6 +1640,73 @@ test("WR-06 uninstall orchestrated mode -- PU-5 silent converge (record already 
       if (outcome.status === "converged") {
         assert.equal(outcome.name, "absent-plugin");
       }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+// SCOPE-01 / WR-06 (intended): the ORCHESTRATED-mode behaviour change,
+// recorded as INTENT rather than discovered as a regression.
+//
+// Before the cross-scope remedy this miss returned
+// `{ status: "failed", reason: "not added" }`, which `applyReconcile`
+// materializes into a visible reconcile row. It now routes to `emitAlreadyGone`
+// and returns `converged`, which `apply.ts` DROPS -- so a hand-edited config
+// naming a plugin whose marketplace is registered one scope over goes quiet on
+// /reload instead of reporting a marketplace the operator cannot fix from that
+// scope. That is the intended behaviour: it is the SAME converge the
+// pre-existing PU-5 "nothing installed at that scope" arm already takes, and
+// the underlying fact is identical.
+//
+// The pre-existing orchestrated test below uses a marketplace absent from BOTH
+// scopes, so it lands on the marketplace-not-added arm and cannot see this.
+test("SCOPE-01 / WR-06 (intended): orchestrated uninstall of an other-scope-only target returns { status: 'converged' } with ZERO notifications", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "uninstall-orch-scope01-"));
+    try {
+      // The plugin is installed in USER scope; the reconcile op names PROJECT.
+      const userLocations = locationsFor("user", cwd);
+      await seedState(userLocations.extensionRoot, {
+        schemaVersion: 1,
+        marketplaces: {
+          mp: {
+            name: "mp",
+            scope: "user",
+            source: pathSource("./src"),
+            addedFromCwd: cwd,
+            manifestPath: path.join(cwd, "marketplace.json"),
+            marketplaceRoot: cwd,
+            plugins: { hello: makePluginRecord({}) },
+          },
+        },
+      });
+
+      const { ctx, pi, notifications } = makeCtx();
+      const outcome = await uninstallPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "hello",
+        notifications: { mode: "orchestrated" },
+      });
+
+      assert.equal(notifications.length, 0, "orchestrated mode must not fire notifications");
+      assert.ok(outcome);
+      assert.equal(
+        outcome.status,
+        "converged",
+        "the cross-scope miss converges like PU-5, so applyReconcile drops the row",
+      );
+      if (outcome.status === "converged") {
+        assert.equal(outcome.name, "hello");
+      }
+
+      // The record one scope over is not touched by the converge.
+      const userAfter = await loadState(userLocations.extensionRoot);
+      assert.ok("hello" in (userAfter.marketplaces["mp"]?.plugins ?? {}), "user record retained");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
