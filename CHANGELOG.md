@@ -26,6 +26,10 @@
 
 - `uninstall`, `enable`, `disable`, `update`, and `reinstall` used to blame the marketplace when a plugin simply was not installed at the scope you named. Asking for `--scope project` while the marketplace sits at user scope reported `{marketplace not added to project scope}` -- but adding the marketplace there would not have made the command succeed, because nothing was installed there either. Those five now report the plugin: `⊘ <plugin> (failed|skipped) {not installed}`, the same row an in-scope marketplace with no record already produced. A marketplace absent from BOTH scopes still reports the marketplace, so a mistyped marketplace name is not disguised as a plugin that merely is not installed. `info` and the `marketplace` verbs are unchanged -- their subject is the marketplace.
 
+- A plugin one scope away from its marketplace no longer looks identical to one that was simply never installed. Both rendered `⊘ <plugin> (skipped) {not installed}`, but the fixes differ: install the plugin in the second case; in the first, either name the other scope or add the marketplace where you asked. The cross-scope row now says which: `{not installed, marketplace in user scope}`.
+
+- `enable` and `disable` reported an absent target as a warning where `uninstall`, `update`, and `reinstall` reported it as an error. Nothing is enabled or disabled when the plugin is not installed, so all five now agree on error. This also re-grades the plain not-installed case for those two verbs.
+
 - Tab completion now offers `--local` on `install`, `update`, `uninstall`, `reinstall`, `enable`, and `disable`, with a description naming the file it writes to. Every one of those verbs already listed `[--local]` in its usage line, so the flag was documented everywhere and suggested nowhere.
 
 ## [0.17.0] - 2026-08-19

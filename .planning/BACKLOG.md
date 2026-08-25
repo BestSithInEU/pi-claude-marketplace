@@ -1985,48 +1985,17 @@ Code seams: `edge/args-schema.ts` (`parseCommandArgs`, the arity gap),
 `edge/flag-catalog.ts` + `tests/architecture/flag-catalog-drift.test.ts`
 (the guard that needs to grow a marketplace half).
 
-## SEV-01: "absent target" renders at two severities depending on the verb
+## ~~SEV-01: "absent target" renders at two severities depending on the verb~~ -- CLOSED
 
-Surfaced 2026-08-24 while landing the SCOPE-01 cross-scope reason tokens. Not
-introduced by that change -- it made the divergence reachable from more verbs,
-which is how it became visible.
+Filed and closed the same day (2026-08-24). `enable` / `disable` stamped
+`warning` on `{not installed}` where `uninstall` / `update` / `reinstall` stamp
+`error`, each citing D-01. Closed by re-grading `composeOutcomeRow`'s
+`not-recorded` arm to `error`, so all five verbs now agree under the tri-state
+rule (info = reached, warning = fell short, error = not carried out).
 
-One fact, `⊘ <plugin> (skipped) {not installed}`, is stamped two ways:
-
-| Verb | Severity | Rule |
-|------|----------|------|
-| `uninstall` | `error` | `emitAlreadyGone` literal |
-| `update` | `error` | `cascadeSkipSeverity`, cites D-01 |
-| `reinstall` | `error` | inline `reasons.includes("not installed") ? "error" : ...`, cites CR-02 / D-01 |
-| `enable` / `disable` | `warning` | `composeOutcomeRow`'s `not-recorded` arm, cites D-03 / D-06 |
-
-Both sides carry a decision ID, so this is two rules disagreeing rather than
-one site drifting. D-01 reads "an absent-target update cannot be carried out ->
-error". The `not-recorded` comment reads "`not installed` is actionable ->
-warning". The tri-state model (info = desired state reached, warning = carried
-out but short, error = NOT carried out) favors `error`: nothing was enabled or
-disabled, and the operator's command did not happen.
-
-**Why it was not fixed with the SCOPE-01 work.** `composeOutcomeRow`'s
-`not-recorded` arm is pre-existing on `main` and serves enable/disable's
-IN-SCOPE case as well -- marketplace present, plugin never installed. Changing
-the literal would move that untouched path too, and its rendered form is pinned
-by the `enable-not-installed` catalog state
-(`docs/output-catalog.md:2529`). That is a deliberate re-grading of an existing
-contract, not a drive-by.
-
-**Fix shape.** Decide which rule wins for the absent-target class, then apply it
-at all four sites at once and re-pin the catalog state. If `warning` wins for
-enable/disable specifically, the reason belongs in the comment -- plausibly that
-enable/disable are declarative and re-runnable where uninstall/update/reinstall
-are not -- so the next reader does not read it as drift.
-
-Code seams: `orchestrators/plugin/enable-disable.ts` (`composeOutcomeRow`,
-`not-recorded` arm), `orchestrators/plugin/update.ts` (`cascadeSkipSeverity`),
-`orchestrators/plugin/reinstall.ts` (the in-scope skipped arm),
-`orchestrators/plugin/shared.ts` (`emitMarketplaceNotAddedSignal`),
-`orchestrators/plugin/uninstall.ts` (`emitAlreadyGone`),
-`docs/output-catalog.md` (`enable-not-installed`).
+The re-grade moves the IN-SCOPE case too, which is why it needed a decision
+rather than a drive-by: the `enable-not-installed` catalog state was re-graded
+with it, not worked around.
 
 <!--
 Pruned 2026-06-08: both prior items shipped in v1.10 Error Attribution.
