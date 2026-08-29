@@ -26,7 +26,7 @@ import {
   STATUS_TOKENS,
 } from "../../extensions/pi-claude-marketplace/shared/notify.ts";
 
-test("OUT-08: REASONS is the closed 40-entry reason set", () => {
+test("OUT-08: REASONS is the closed 44-entry reason set", () => {
   // D-76-08: +1 for the `authentication required` failure-class member (32 -> 33).
   // PURL-06: +1 for the `dangling reference` failure-class member (33 -> 34).
   // MCPR-03 / D-02: +1 for the malformed mcp failure-class member (34 -> 35).
@@ -37,7 +37,17 @@ test("OUT-08: REASONS is the closed 40-entry reason set", () => {
   // OUT-01 / DFEN-04: +1 for the `installs disabled` member -- the marker for an
   // install that landed disabled on the plugin's own declaration (38 -> 39).
   // WDET-04 / D-106-04: +1 for the dedicated `workflows` member (39 -> 40).
-  assert.equal(REASONS.length, 40);
+  // CMP-4 / SCOPE-01: +1 for `marketplace not added to user scope` -- the SECOND
+  // structural marketplace-absent marker, replacing `marketplace not added` on the row when
+  // the container was found in the scope the command did not target (40 -> 41),
+  // +1 for its project-target sibling `marketplace not added to project scope`
+  // (41 -> 42).
+  // SCOPE-01 / D-01: +2 for the `marketplace in user scope` /
+  // `marketplace in project scope` CONTENT pair -- the cross-scope qualifier an
+  // absent-target lifecycle row joins to `not installed` so the
+  // container-is-one-scope-over miss stops rendering byte-identically to the
+  // container-is-here miss (42 -> 44).
+  assert.equal(REASONS.length, 44);
 });
 
 test("SNM-02: STATUS_TOKENS is the closed 24-entry token set", () => {
