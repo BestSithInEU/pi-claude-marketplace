@@ -5711,6 +5711,86 @@ test("WDET-02: a conventional workflows directory requires partial install and n
   });
 });
 
+test("WDET-06: opaque workflow bytes cannot block installation or execute commands", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "install-workflow-opaque-"));
+    const malformedName = "malformed.workflow.yml";
+    const commandName = "command.workflow.yml";
+    const malformedBody = "{ this is not valid workflow data";
+    const executionSentinel = path.join(cwd, "workflow-command-executed");
+    const commandBody =
+      "steps:\n" +
+      `  - run: ${JSON.stringify(
+        `${process.execPath} -e ${JSON.stringify(
+          `require("node:fs").writeFileSync(${JSON.stringify(executionSentinel)}, "executed")`,
+        )}`,
+      )}\n`;
+
+    try {
+      const locations = locationsFor("project", cwd);
+      const seeded = await seedPathMarketplaceWithPlugin({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        marketplaceName: "mp",
+        pluginName: "helper",
+        pluginVersion: "1.0.0",
+        pluginJsonVersion: "1.0.0",
+        skills: [{ sourceName: "tool" }],
+        workflows: [
+          { sourceName: malformedName, body: malformedBody },
+          { sourceName: commandName, body: commandBody },
+        ],
+      });
+
+      const { ctx, pi, notifications } = makeCtx();
+      await installPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "helper",
+        partial: true,
+      });
+
+      assert.equal(notifications.length, 1);
+      assert.ok(
+        (await readFile(path.join(locations.skillsTargetDir, "helper-tool", "SKILL.md"), "utf8"))
+          .length > 0,
+      );
+
+      const after = await loadState(locations.extensionRoot);
+      const record = after.marketplaces.mp?.plugins.helper;
+      assert.ok(record !== undefined);
+      assert.deepEqual(record.compatibility.unsupported, ["workflows"]);
+      assert.deepEqual(Object.keys(record.resources), [
+        "skills",
+        "prompts",
+        "agents",
+        "mcpServers",
+        "hooks",
+      ]);
+      assert.equal(
+        (await filesBelow(locations.scopeRoot)).some((file) =>
+          [malformedName, commandName].includes(path.basename(file)),
+        ),
+        false,
+      );
+      assert.equal(
+        await readFile(path.join(seeded.pluginRoot, "workflows", malformedName), "utf8"),
+        malformedBody,
+      );
+      assert.equal(
+        await readFile(path.join(seeded.pluginRoot, "workflows", commandName), "utf8"),
+        commandBody,
+      );
+      await assert.rejects(stat(executionSentinel), { code: "ENOENT" });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
 test("D-106-06: structural failure wins over a workflows soft signal under partial install", async () => {
   await withHermeticHome(async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "install-workflow-structural-"));

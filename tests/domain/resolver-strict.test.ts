@@ -670,14 +670,24 @@ test("WDET-02 strict: every workflow signal resolves to one exact unsupported ki
     readonly directory?: boolean;
   }[] = [
     {
-      name: "entry declaration",
-      source: "./workflow-entry",
-      entry: Object.freeze({ workflows: Object.freeze({ runner: 42 }) }),
+      name: "entry null declaration",
+      source: "./workflow-entry-null",
+      entry: Object.freeze({ workflows: null }),
     },
     {
-      name: "plugin manifest declaration",
-      source: "./workflow-manifest",
-      manifest: Object.freeze({ name: "p1", workflows: 17 }),
+      name: "entry false declaration",
+      source: "./workflow-entry-false",
+      entry: Object.freeze({ workflows: false }),
+    },
+    {
+      name: "plugin manifest null declaration",
+      source: "./workflow-manifest-null",
+      manifest: Object.freeze({ name: "p1", workflows: null }),
+    },
+    {
+      name: "plugin manifest false declaration",
+      source: "./workflow-manifest-false",
+      manifest: Object.freeze({ name: "p1", workflows: false }),
     },
     { name: "conventional directory", source: "./workflow-directory", directory: true },
     {
@@ -708,6 +718,23 @@ test("WDET-02 strict: every workflow signal resolves to one exact unsupported ki
       assert.deepEqual(r.unsupported, ["workflows"], c.name);
       assert.deepEqual(r.notes, ["contains workflows"], c.name);
     }
+  }
+});
+
+test("WDET-02 strict: a workflows regular file is not a convention signal", async () => {
+  const localRoot = ROOT("./workflow-file");
+  const r = await resolveStrict(
+    basicEntry({ source: "./workflow-file" }),
+    mockCtx(MP, {
+      [localRoot]: "dir",
+      [path.join(localRoot, "workflows")]: { contents: "opaque workflow bytes" },
+    }),
+  );
+
+  assert.equal(r.state, "installable");
+  assert.equal(r.notes.includes("contains workflows"), false);
+  if (r.state === "installable") {
+    assert.equal(r.unsupported.includes("workflows"), false);
   }
 });
 

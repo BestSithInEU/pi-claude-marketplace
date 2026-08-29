@@ -55,10 +55,14 @@ async function stagePrompt(locations: ScopedLocations, name: string): Promise<st
   return file;
 }
 
-async function stageWorkflowDecoy(locations: ScopedLocations, name: string): Promise<string> {
+async function stageWorkflowDecoy(
+  locations: ScopedLocations,
+  name: string,
+  contents: string,
+): Promise<string> {
   const file = path.join(locations.extensionRoot, "resources", "workflows", name);
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(file, "steps:\n  - run: echo sentinel\n");
+  await writeFile(file, contents);
   return file;
 }
 
@@ -85,8 +89,22 @@ test("resources_discover returns deterministic user and project skill and prompt
     const projectSkill = await stageSkill(project, "same-name");
     const userPrompt = await stagePrompt(user, "same-name");
     const projectPrompt = await stagePrompt(project, "same-name");
-    const userWorkflow = await stageWorkflowDecoy(user, "user.workflow.yml");
-    const projectWorkflow = await stageWorkflowDecoy(project, "project.workflow.yml");
+    const executionSentinel = path.join(tmp, "workflow-command-executed");
+    const userWorkflow = await stageWorkflowDecoy(
+      user,
+      "user.workflow.yml",
+      "{ this is not valid workflow data",
+    );
+    const projectWorkflow = await stageWorkflowDecoy(
+      project,
+      "project.workflow.yml",
+      "steps:\n" +
+        `  - run: ${JSON.stringify(
+          `${process.execPath} -e ${JSON.stringify(
+            `require("node:fs").writeFileSync(${JSON.stringify(executionSentinel)}, "executed")`,
+          )}`,
+        )}\n`,
+    );
     await writeFile(path.join(user.promptsTargetDir, "not-a-prompt.txt"), "ignore me");
 
     assert.equal((await stat(userWorkflow)).isFile(), true);
@@ -98,6 +116,7 @@ test("resources_discover returns deterministic user and project skill and prompt
       promptPaths: [userPrompt, projectPrompt],
     } satisfies DiscoveredResources);
     assert.deepEqual(Object.keys(result), ["skillPaths", "promptPaths"]);
+    await assert.rejects(stat(executionSentinel), { code: "ENOENT" });
     assert.equal(
       [...result.skillPaths, ...result.promptPaths].some(
         (resourcePath) => resourcePath === userWorkflow || resourcePath === projectWorkflow,
