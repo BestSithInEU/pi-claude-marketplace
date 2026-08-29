@@ -1,7 +1,7 @@
 ---
 phase: 106
 slug: workflow-detection-and-partial-install
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: 2026-08-29
@@ -195,7 +195,7 @@ Normal install rejection:
 A plugin operation has failed.
 
 ● official [user]
-  ⊖ helper v1.0.0 (partially-available) {workflows}
+  ⊖ helper (partially-available) {workflows}
     Re-run with --partial to install the supported components.
 ```
 
@@ -273,11 +273,11 @@ Deferred workflow validation, materialization, and execution do not appear in th
 
 ## Checker Sign-Off
 
-- [ ] Dimension 1 Copywriting: PASS
-- [ ] Dimension 2 Visuals: PASS
-- [ ] Dimension 3 Color: PASS
-- [ ] Dimension 4 Typography: PASS
-- [ ] Dimension 5 Spacing: PASS
-- [ ] Dimension 6 Registry Safety: PASS
+- [x] Dimension 1 Copywriting: PASS
+- [x] Dimension 2 Visuals: PASS
+- [x] Dimension 3 Color: PASS
+- [x] Dimension 4 Typography: PASS
+- [x] Dimension 5 Spacing: PASS
+- [x] Dimension 6 Registry Safety: PASS
 
-**Approval:** pending
+**Approval:** Approved after execution and byte-contract verification.

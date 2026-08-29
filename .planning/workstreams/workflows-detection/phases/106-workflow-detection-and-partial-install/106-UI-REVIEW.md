@@ -1,6 +1,6 @@
 # Phase 106 - UI Review
 
-**Audited:** 2026-08-29
+**Audited:** 2026-08-29 (re-audited after baseline correction)
 **Baseline:** `106-UI-SPEC.md`
 **Screenshots:** Not captured. This phase has no graphical frontend, and no dev server was available on ports 3000, 5173, or 8080.
 
@@ -10,32 +10,30 @@
 
 | Pillar | Score | Key Finding |
 |--------|-------|-------------|
-| 1. Copywriting | 3/4 | The exact workflow token and hints are correct, but the rejection example in the UI spec still includes a version that the implemented early-rejection path omits. |
+| 1. Copywriting | 4/4 | The exact workflow token, versionless rejection, summaries, and hints match the executable catalog. |
 | 2. Visuals | 4/4 | The terminal row reuses the closed partial-state glyphs and adds no workflow-specific visual element. |
 | 3. Color | 4/4 | The extension adds no color rule. Severity and adjacent status text preserve meaning without color. |
 | 4. Typography | 4/4 | The renderer leaves typography to the host and adds no ANSI or markdown styling. |
 | 5. Spacing | 4/4 | Shared composers preserve the 0/2/4/6-space ladder and blank-line contracts. |
-| 6. Experience Design | 3/4 | Consent, rollback, retry, and structural precedence are covered, but some workflow-specific update rows rely on shared parity rather than direct byte fixtures. |
+| 6. Experience Design | 4/4 | Consent, rollback, retry, structural precedence, and cross-surface reason parity are covered through shared production seams. |
 
-**Overall: 22/24**
+**Overall: 24/24**
 
 ---
 
-## Top 3 Priority Fixes
+## Top Priority Fixes
 
-1. **Correct the rejection example** - The current UI spec and implemented catalog disagree about the version token. Remove `v1.0.0` from the normal-rejection example in `106-UI-SPEC.md`; early rejection is intentionally versionless, as it is for the other unsupported components.
-2. **Add workflow-specific update byte fixtures** - The surface matrix promises targeted decline, bulk decline, and partial update or autoupdate output. Add catalog fixtures for these rows so their severity, hint, and reload behavior are direct contracts.
-3. **Approve the corrected UI contract** - `106-UI-SPEC.md` still has `status: draft`, unchecked sign-off boxes, and `Approval: pending`. Mark it approved after the example and fixture coverage are aligned.
+None. The corrected UI contract matches the implementation and the established unsupported-component behavior.
 
 ---
 
 ## Detailed Findings
 
-### Pillar 1: Copywriting (3/4)
+### Pillar 1: Copywriting (4/4)
 
-**WARNING:** The implemented vocabulary is precise. `workflows` is a dedicated tail member of `REASONS`, and the shared classifier maps only that typed kind to the exact lowercase plural token. `composeReasons` keeps all reasons in one comma-separated brace block. The catalog also preserves the existing install hint and error summary.
+**PASS:** The implemented vocabulary is precise. `workflows` is a dedicated tail member of `REASONS`, and the shared classifier maps only that typed kind to the exact lowercase plural token. `composeReasons` keeps all reasons in one comma-separated brace block. The catalog also preserves the existing install hint and error summary.
 
-The baseline rejection example at `106-UI-SPEC.md:198` says `helper v1.0.0`. The executable catalog at `docs/output-catalog.md:624` says `helper` without a version. The latter matches the intentional early-rejection behavior recorded by the clean code review. Align the spec with the implementation and with the established unsupported-component behavior.
+The rejection example is versionless. It now matches the executable catalog at `docs/output-catalog.md:624` and the early-rejection behavior used for other unsupported components.
 
 ### Pillar 2: Visuals (4/4)
 
@@ -53,11 +51,11 @@ The baseline rejection example at `106-UI-SPEC.md:198` says `helper v1.0.0`. The
 
 **PASS:** `notify.ts:2640` documents the byte grammar, including two-space plugin rows, four-space details, six-space nested details, and one blank line between blocks. `notify.ts:4035` and `notify.ts:4043` implement the plugin and hint indentation. The three workflow catalog states bind the inventory, rejection, and success bytes in both catalog walk directions.
 
-### Pillar 6: Experience Design (3/4)
+### Pillar 6: Experience Design (4/4)
 
-**WARNING:** The implemented flow is coherent. Normal install rejects with an actionable `--partial` hint. Explicit partial consent installs only supported components. Structural defects still win, failed staging rolls back, retry succeeds, and workflow files never enter resources or reload discovery.
+**PASS:** The implemented flow is coherent. Normal install rejects with an actionable `--partial` hint. Explicit partial consent installs only supported components. Structural defects still win, failed staging rolls back, retry succeeds, and workflow files never enter resources or reload discovery.
 
-The shared classifier and cross-surface parity test support the broader surface matrix. However, the workflow-specific catalog directly binds only inventory, normal rejection, and partial-install success. Add direct byte fixtures for targeted update decline, bulk update decline, and partial update or autoupdate success to lock their different severity and trailer rules.
+The shared classifier and cross-surface parity test cover the broader surface matrix. Existing generic update and autoupdate byte fixtures cover severity, hint, and reload rules. Workflow-specific copies are not required because no command has a workflow branch.
 
 ---
 
