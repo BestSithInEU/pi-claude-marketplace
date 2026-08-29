@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: workflows-detection
 milestone_name: Workflow Detection
-current_phase: 106
-status: completed
+status: Awaiting next milestone
 stopped_at: Phase 106 complete — all phases complete
-last_updated: "2026-08-29T21:18:26.734Z"
+last_updated: "2026-08-29T21:32:49.077Z"
 last_activity: 2026-08-29
-last_activity_desc: Phase 106 complete
-state_head: 4627b9eae2a44761b75f7f79c46a91cfc1166c47
+last_activity_desc: Milestone workflows-detection completed and archived
+state_head: 8a16dec76a37bbc48e8808ce245a002c742191bb
 progress:
   total_phases: 1
   completed_phases: 1
   total_plans: 4
   completed_plans: 4
   percent: 100
+current_phase: 106
 ---
 
 # Project State
@@ -24,16 +24,14 @@ progress:
 See: `.planning/PROJECT.md` (updated 2026-08-29)
 
 **Core value:** A Pi user can install each supported Claude plugin component as a working Pi artifact.
-**Current focus:** Milestone complete — Workflow Detection
+**Current focus:** Planning the next milestone
 
 ## Current Position
 
-Phase: 106
+Phase: Milestone workflows-detection complete
 Plan: —
-Status: All phases complete
-Last activity: 2026-08-29 — Phase 106 complete
-
-Progress: [██████████] 100%
+Status: Awaiting next milestone
+Last activity: 2026-08-29 — Milestone workflows-detection completed and archived
 
 ## Performance Metrics
 
@@ -93,4 +91,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 Last session: 2026-08-29T20:33:47.247Z
 Stopped at: Phase 106 complete — all phases complete
-Resume file: .planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-VERIFICATION.md
+Resume file: .planning/workstreams/workflows-detection/milestones/workflows-detection-phases/106-workflow-detection-and-partial-install/106-VERIFICATION.md
+
+## Operator Next Steps
+
+- Start the next milestone with /gsd-new-milestone
