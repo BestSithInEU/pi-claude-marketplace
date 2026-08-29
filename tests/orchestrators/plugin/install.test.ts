@@ -5488,10 +5488,12 @@ test("WDET-02: a conventional workflows directory requires partial install and n
       assert.deepEqual(notifications, [
         {
           severity: "error",
+          // The install gate runs before version resolution, so the existing
+          // rejection grammar has no version slot.
           message:
             "A plugin operation has failed.\n\n" +
             "● mp [project]\n" +
-            "  ⊖ helper v1.0.0 (partially-available) {workflows}\n" +
+            "  ⊖ helper (partially-available) {workflows}\n" +
             "    Re-run with --partial to install the supported components.",
         },
       ]);

@@ -82,7 +82,7 @@ import type { Dependency } from "./concerns/soft-dep.ts";
  * at column 0 with severity `"error"`.
  *
  * D-09 / OUT-08: this tuple is the byte-source of the closed set -- its
- * 39-entry membership AND order are catalog-stable and MUST NOT change (new
+ * 40-entry membership AND order are catalog-stable and MUST NOT change (new
  * tokens append at the tail; existing entries never reorder). The
  * topic-grouped organization of these literals (idempotent / unsupported-
  * components / failure-class shared groups, plus the command-private reasons)
@@ -197,6 +197,10 @@ export const REASONS = [
   // D-95-02): a steady-state inventory row states durable facts about a record,
   // and a statement about an action not yet taken is not one of those.
   "installs disabled",
+  // WDET-04 / D-106-04: a plugin declares workflows or has the conventional
+  // `<pluginRoot>/workflows/` directory. Workflows remain unsupported, so this
+  // dedicated reason identifies the dropped kind on every partial surface.
+  "workflows",
 ] as const;
 
 export type Reason = (typeof REASONS)[number];

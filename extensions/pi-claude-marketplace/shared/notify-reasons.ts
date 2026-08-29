@@ -4,7 +4,7 @@ import type { SoftDepStatus } from "../platform/pi-api.ts";
 /**
  * shared/notify-reasons.ts -- the topic-grouped organization of the closed
  * reasons set (D-09). The byte-critical runtime tuple `REASONS` stays declared
- * in `notify.ts` as the SINGLE source of catalog truth (OUT-08: the 39-entry
+ * in `notify.ts` as the SINGLE source of catalog truth (OUT-08: the 40-entry
  * membership AND order must stay byte-identical for catalog stability); this
  * module reorganizes that closed set into shared topic-grouped enums + a
  * structural completeness proof WITHOUT recomposing the `REASONS` tuple (which
@@ -21,7 +21,8 @@ import type { SoftDepStatus } from "../platform/pi-api.ts";
  * brought the fourth topic group with it (D-102-06). `COMPAT-01` pins the
  * membership by enumeration and `notify-closed-set-locks.test.ts` pins the
  * length, so the two sentences above cannot drift from the tuple again without
- * a red test.
+ * a red test. WDET-04 / D-106-04 moved the count from 39 to 40 when the
+ * dedicated `workflows` unsupported reason joined the tail.
  *
  * The idempotent group keeps an `as const` tuple because `skipSeverity` needs
  * a runtime `Set` to test against; the unsupported and failure groups are
@@ -102,6 +103,7 @@ type UnsupportedReason =
   | "unsupported source"
   // D-90-05: the truthful marker for a dropped non-carve-out component kind.
   | "unsupported component"
+  | "workflows"
   | "no longer installable";
 
 /**

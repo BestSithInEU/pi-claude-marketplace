@@ -72,7 +72,7 @@ export function narrowProbeError(
  * re-declaring the union.
  */
 export type UnsupportedReason =
-  "unsupported hooks" | "lsp" | "unsupported source" | "unsupported component";
+  "unsupported hooks" | "lsp" | "unsupported source" | "unsupported component" | "workflows";
 
 /**
  * MCPR-03 / D-02: the closed-set members `narrowResolverNotes` can emit. It is
@@ -211,6 +211,10 @@ function kindToReason(kind: string): UnsupportedReason {
 
   if (kind === "hooks") {
     return "unsupported hooks";
+  }
+
+  if (kind === "workflows") {
+    return "workflows";
   }
 
   return "unsupported component";

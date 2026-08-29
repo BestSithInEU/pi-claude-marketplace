@@ -380,6 +380,7 @@ export const UNSUPPORTED_COMPONENT_KINDS = [
   "channels",
   "userConfig",
   "settings",
+  "workflows",
 ] as const;
 type UnsupportedKind = (typeof UNSUPPORTED_COMPONENT_KINDS)[number];
 
@@ -394,6 +395,7 @@ const UNSUPPORTED_COMPONENT_CONVENTIONS: Partial<
   themes: [{ relativePath: "themes", kind: "dir" }],
   outputStyles: [{ relativePath: "output-styles", kind: "dir" }],
   settings: [{ relativePath: "settings.json", kind: "file" }],
+  workflows: [{ relativePath: "workflows", kind: "dir" }],
 };
 
 interface PartialResolution {
