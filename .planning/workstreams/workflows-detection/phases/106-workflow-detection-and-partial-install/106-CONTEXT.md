@@ -63,9 +63,9 @@ Workflow validation, materialization, and execution remain out of scope.
 
 ### Milestone contract
 
-- `.planning/REQUIREMENTS.md` — Defines WDET-01 through WDET-06, including the
+- `.planning/workstreams/workflows-detection/REQUIREMENTS.md` — Defines WDET-01 through WDET-06, including the
   exact reason token and the no-materialization boundary.
-- `.planning/ROADMAP.md` — Defines the Phase 106 goal, success criteria, and
+- `.planning/workstreams/workflows-detection/ROADMAP.md` — Defines the Phase 106 goal, success criteria, and
   dependency on completed Phase 105.
 - `.planning/PROJECT.md` — Defines the project constraints, current milestone,
   and established partial-availability behavior.

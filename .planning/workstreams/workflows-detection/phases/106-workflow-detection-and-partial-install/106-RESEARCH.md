@@ -122,7 +122,7 @@ These directives come from the user-supplied `AGENTS.md` for this workspace. [VE
 |------------|-----------|----------|
 | Shared unsupported-kind collection | Per-command workflow detection | Rejected: it would duplicate filesystem policy and cause strict/loose or surface drift. [VERIFIED: extensions/pi-claude-marketplace/domain/resolver.ts:532-567,1545-1568] |
 | Opaque `Type.Unknown()` field | A custom workflow payload schema | Rejected by D-106-01; upstream payload semantics are not support semantics for this adapter. [CITED: https://code.claude.com/docs/en/plugins-reference] |
-| Existing partial-install ledger | A workflow-specific partial installer | Rejected: workflows are unsupported and must never be staged. [VERIFIED: .planning/REQUIREMENTS.md:17-22; extensions/pi-claude-marketplace/orchestrators/plugin/install.ts:915-1248] |
+| Existing partial-install ledger | A workflow-specific partial installer | Rejected: workflows are unsupported and must never be staged. [VERIFIED: .planning/workstreams/workflows-detection/REQUIREMENTS.md:17-22; extensions/pi-claude-marketplace/orchestrators/plugin/install.ts:915-1248] |
 
 **Installation:** No package installation. Phase 106 uses the current stack. [VERIFIED: package.json:8-29]
 
@@ -208,7 +208,7 @@ Every listed production seam and test analog already exists at these paths. [VER
 workflows: Type.Optional(Type.Unknown()),
 ```
 
-The exact new key is `workflows`, and both target declaration locations are required by WDET-01. [VERIFIED: .planning/REQUIREMENTS.md:9-13]
+The exact new key is `workflows`, and both target declaration locations are required by WDET-01. [VERIFIED: .planning/workstreams/workflows-detection/REQUIREMENTS.md:9-13]
 
 ### Pattern 2: Append one unsupported kind and one fixed convention
 
@@ -224,19 +224,19 @@ The exact new key is `workflows`, and both target declaration locations are requ
 { relativePath: "workflows", kind: "dir" },
 ```
 
-The exact new kind and directory are required by WDET-02 and D-106-02. [VERIFIED: .planning/REQUIREMENTS.md:11-13; .planning/phases/106-workflow-detection-and-partial-install/106-CONTEXT.md:23-32]
+The exact new kind and directory are required by WDET-02 and D-106-02. [VERIFIED: .planning/workstreams/workflows-detection/REQUIREMENTS.md:11-13; .planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-CONTEXT.md:23-32]
 
 ### Pattern 3: Map once at the classifier boundary
 
 **What:** Add `workflows` to `UnsupportedReason`, map only that typed kind to `workflows`, and append the reason to `REASONS`. Also add it to the `UnsupportedReason` topic group in `notify-reasons.ts` so the compile-time coverage proof remains exhaustive. [VERIFIED: extensions/pi-claude-marketplace/shared/probe-classifiers.ts:68-85,183-216; extensions/pi-claude-marketplace/shared/notify-reasons.ts:93-105,217-257]
 
-**When to use:** Use for list, info, install, update, autoupdate, enable, reconcile, and backfill projections. Do not copy this mapping into any orchestrator. [VERIFIED: .planning/phases/106-workflow-detection-and-partial-install/106-UI-SPEC.md:215-229]
+**When to use:** Use for list, info, install, update, autoupdate, enable, reconcile, and backfill projections. Do not copy this mapping into any orchestrator. [VERIFIED: .planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-UI-SPEC.md:215-229]
 
 ```typescript
 if (kind === "workflows") return "workflows";
 ```
 
-The exact input and output literal are locked by WDET-04 and the UI contract. [VERIFIED: .planning/REQUIREMENTS.md:15-18; .planning/phases/106-workflow-detection-and-partial-install/106-UI-SPEC.md:104-137]
+The exact input and output literal are locked by WDET-04 and the UI contract. [VERIFIED: .planning/workstreams/workflows-detection/REQUIREMENTS.md:15-18; .planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-UI-SPEC.md:104-137]
 
 ### Pattern 4: Prove absence at materialization boundaries
 
@@ -257,12 +257,12 @@ The exact input and output literal are locked by WDET-04 and the UI contract. [V
 
 | Problem | Don't Build | Use Instead | Why |
 |---------|-------------|-------------|-----|
-| Workflow payload validation | A workflow schema, parser, or script validator | `Type.Optional(Type.Unknown())` presence admission | Validation and execution are out of scope, while upstream payloads can name custom files or directories. [VERIFIED: .planning/REQUIREMENTS.md:24-36] [CITED: https://code.claude.com/docs/en/plugins-reference] |
-| Directory discovery | Recursive scanning or filename matching | Existing fixed-path `dir` convention stat | WDET-02 requires directory existence only, and the resolver already owns this pattern. [VERIFIED: .planning/REQUIREMENTS.md:11-13; extensions/pi-claude-marketplace/domain/resolver.ts:386-397,532-567] |
+| Workflow payload validation | A workflow schema, parser, or script validator | `Type.Optional(Type.Unknown())` presence admission | Validation and execution are out of scope, while upstream payloads can name custom files or directories. [VERIFIED: .planning/workstreams/workflows-detection/REQUIREMENTS.md:24-36] [CITED: https://code.claude.com/docs/en/plugins-reference] |
+| Directory discovery | Recursive scanning or filename matching | Existing fixed-path `dir` convention stat | WDET-02 requires directory existence only, and the resolver already owns this pattern. [VERIFIED: .planning/workstreams/workflows-detection/REQUIREMENTS.md:11-13; extensions/pi-claude-marketplace/domain/resolver.ts:386-397,532-567] |
 | Partial-install control flow | A workflow-specific option or prompt | Existing `--partial` gate | Normal and partial gates already distinguish the two materializable arms. [VERIFIED: extensions/pi-claude-marketplace/domain/resolver.ts:1689-1743; extensions/pi-claude-marketplace/orchestrators/plugin/install.ts:748-770] |
 | Reason propagation | Per-command `workflows` branches | Shared `narrowUnsupportedKinds` mapping | First-wins deduplication and parity already live in one helper. [VERIFIED: extensions/pi-claude-marketplace/shared/probe-classifiers.ts:183-216] |
 | Workflow persistence | A new resource record or migration | Existing `compatibility.unsupported: string[]` | Compatibility metadata already carries unsupported kind strings independently of materialized paths. [VERIFIED: extensions/pi-claude-marketplace/persistence/state-io.ts:81-126] |
-| Workflow runtime | A bridge, loader, runner, or reload hook | No implementation | WDET-06 explicitly forbids materialization and execution. [VERIFIED: .planning/REQUIREMENTS.md:20-22] |
+| Workflow runtime | A bridge, loader, runner, or reload hook | No implementation | WDET-06 explicitly forbids materialization and execution. [VERIFIED: .planning/workstreams/workflows-detection/REQUIREMENTS.md:20-22] |
 
 **Key insight:** This phase succeeds by classifying workflows and preserving their absence from every materialization boundary, not by partially implementing workflow support.
 
@@ -362,7 +362,7 @@ const UNSUPPORTED_COMPONENT_CONVENTIONS = [
 ] as const;
 ```
 
-The existing table uses `relativePath` plus `"file" | "dir"` checks, and WDET-02 supplies the exact new path and kind. [VERIFIED: extensions/pi-claude-marketplace/domain/resolver.ts:386-397; .planning/REQUIREMENTS.md:11-13]
+The existing table uses `relativePath` plus `"file" | "dir"` checks, and WDET-02 supplies the exact new path and kind. [VERIFIED: extensions/pi-claude-marketplace/domain/resolver.ts:386-397; .planning/workstreams/workflows-detection/REQUIREMENTS.md:11-13]
 
 ### Dedicated reason before generic fallback
 
@@ -375,7 +375,7 @@ function kindToReason(kind: string): UnsupportedReason {
 }
 ```
 
-The first, second, and fallback branches are the current verbatim values `"lspServers" -> "lsp"`, `"hooks" -> "unsupported hooks"`, and `"unsupported component"`; WDET-04 supplies the exact workflow branch. [VERIFIED: extensions/pi-claude-marketplace/shared/probe-classifiers.ts:199-216; .planning/REQUIREMENTS.md:15-18]
+The first, second, and fallback branches are the current verbatim values `"lspServers" -> "lsp"`, `"hooks" -> "unsupported hooks"`, and `"unsupported component"`; WDET-04 supplies the exact workflow branch. [VERIFIED: extensions/pi-claude-marketplace/shared/probe-classifiers.ts:199-216; .planning/workstreams/workflows-detection/REQUIREMENTS.md:15-18]
 
 ### No workflow staging branch
 
@@ -394,14 +394,14 @@ const record = {
 };
 ```
 
-The current state record persists these exact compatibility and resource keys. Keep this shape unchanged except that the existing unsupported array can now contain the requirement-supplied value `"workflows"`. [VERIFIED: extensions/pi-claude-marketplace/orchestrators/plugin/install.ts:1177-1227; .planning/REQUIREMENTS.md:11-22]
+The current state record persists these exact compatibility and resource keys. Keep this shape unchanged except that the existing unsupported array can now contain the requirement-supplied value `"workflows"`. [VERIFIED: extensions/pi-claude-marketplace/orchestrators/plugin/install.ts:1177-1227; .planning/workstreams/workflows-detection/REQUIREMENTS.md:11-22]
 
 ## State of the Art
 
 | Old Approach | Current Approach | When Changed | Impact |
 |--------------|------------------|--------------|--------|
 | Only the existing unsupported fields and conventions are classified. | Add workflow declaration and conventional-directory presence to the same opaque unsupported-kind collector. | Phase 106 | Workflow-bearing plugins become partial without adding workflow support. [VERIFIED: extensions/pi-claude-marketplace/domain/components/plugin.ts:34-44; extensions/pi-claude-marketplace/domain/resolver.ts:375-397] |
-| Non-hook, non-LSP kinds use `{unsupported component}`. | `workflows` gets its own exact closed reason; all other current mappings stay stable. | Phase 106 | Users can identify the specific unsupported capability across all surfaces. [VERIFIED: extensions/pi-claude-marketplace/shared/probe-classifiers.ts:199-216; .planning/REQUIREMENTS.md:15-18] |
+| Non-hook, non-LSP kinds use `{unsupported component}`. | `workflows` gets its own exact closed reason; all other current mappings stay stable. | Phase 106 | Users can identify the specific unsupported capability across all surfaces. [VERIFIED: extensions/pi-claude-marketplace/shared/probe-classifiers.ts:199-216; .planning/workstreams/workflows-detection/REQUIREMENTS.md:15-18] |
 | Upstream plugin layouts can contain a default `workflows/` directory and manifest-declared custom workflow paths. | This adapter recognizes declaration or conventional-directory presence but does not interpret the payload. | Current upstream reference; Phase 106 adapter boundary | Detection aligns with upstream packaging without creating a runner or custom-path trust boundary. [CITED: https://code.claude.com/docs/en/plugins-reference] |
 
 **Deprecated/outdated:**
@@ -416,9 +416,9 @@ The current state record persists these exact compatibility and resource keys. K
 
 ## Open Questions
 
-No implementation-blocking questions remain. The context locks declaration semantics, fixed-path detection, tuple placement, reason text, partial consent, persistence behavior, and the no-materialization boundary. [VERIFIED: .planning/phases/106-workflow-detection-and-partial-install/106-CONTEXT.md:21-55]
+No implementation-blocking questions remain. The context locks declaration semantics, fixed-path detection, tuple placement, reason text, partial consent, persistence behavior, and the no-materialization boundary. [VERIFIED: .planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-CONTEXT.md:21-55]
 
-One execution note remains: use synthetic local fixtures named for `claude-security` and `code-modernization` rather than making their tests depend on a network fetch. WDET-02 requires their current layout pattern, and the milestone explicitly forbids new network operations. [VERIFIED: .planning/REQUIREMENTS.md:11-13,30-36]
+One execution note remains: use synthetic local fixtures named for `claude-security` and `code-modernization` rather than making their tests depend on a network fetch. WDET-02 requires their current layout pattern, and the milestone explicitly forbids new network operations. [VERIFIED: .planning/workstreams/workflows-detection/REQUIREMENTS.md:11-13,30-36]
 
 ## Environment Availability
 
@@ -427,7 +427,7 @@ One execution note remains: use synthetic local fixtures named for `claude-secur
 | Node.js | Build and tests | ✓ | `v26.7.0` | Declared minimum is `>=20.19.0`. [VERIFIED: local `node --version`, 2026-08-29; package.json:31-33] |
 | npm | Test scripts and phase gate | ✓ | `11.19.0` | Direct `node --test` for focused suites. [VERIFIED: local `npm --version`, 2026-08-29; package.json:74-89] |
 | pre-commit | Later commit gate | ✓ | `4.5.1` | None; AGENTS.md requires it before commit. [VERIFIED: local `pre-commit --version`, 2026-08-29] |
-| External service or new package | None | Not required | — | This phase uses local code, fixtures, and the existing dependency set. [VERIFIED: .planning/REQUIREMENTS.md:30-36; package.json:8-29] |
+| External service or new package | None | Not required | — | This phase uses local code, fixtures, and the existing dependency set. [VERIFIED: .planning/workstreams/workflows-detection/REQUIREMENTS.md:30-36; package.json:8-29] |
 
 **Missing dependencies with no fallback:** None.
 
@@ -465,7 +465,7 @@ Both focused commands completed successfully before implementation on 2026-08-29
 1. Add `workflows` acceptance cases for both shared schema consumers. Include at least one non-path value to prove opacity and defined-value presence semantics. [VERIFIED: extensions/pi-claude-marketplace/domain/components/plugin.ts:34-44,61-81,93-102]
 2. Add strict and loose cases for top-level marketplace declaration, top-level plugin-manifest declaration, conventional directory only, and declaration plus directory. Assert the exact ordered unsupported array. [VERIFIED: extensions/pi-claude-marketplace/domain/resolver.ts:511-567,1545-1568]
 3. Add a both-defects case: a structural defect plus workflow signal must stay `unavailable`, must not expose a materializable root, and must not gain a partial hint. [VERIFIED: extensions/pi-claude-marketplace/domain/resolver.ts:1619-1640]
-4. Add classifier cases for a single workflow kind, duplicate workflow kinds, and combined existing kinds. Required examples include exact order `["lsp", "workflows"]` and `["unsupported component", "workflows"]`. [VERIFIED: .planning/phases/106-workflow-detection-and-partial-install/106-UI-SPEC.md:118-137]
+4. Add classifier cases for a single workflow kind, duplicate workflow kinds, and combined existing kinds. Required examples include exact order `["lsp", "workflows"]` and `["unsupported component", "workflows"]`. [VERIFIED: .planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-UI-SPEC.md:118-137]
 5. Add one cross-surface parity row for workflows and one multi-kind row. The same typed input must drive list/info and install mapping. [VERIFIED: tests/orchestrators/plugin/cross-surface-reason-parity.test.ts:100-185]
 6. Add normal and partial install cases using a supported skill plus a sentinel file under `workflows/`. Use fresh test environments so the rejected normal install cannot contaminate the partial case. Assert no state after rejection, supported materialization after opt-in, exact compatibility metadata, unchanged resource keys, and absence of the sentinel outside the source root. [VERIFIED: tests/orchestrators/plugin/install.test.ts:323-401,5409-5755]
 7. Update catalog examples and the exact-length architecture lock in the same change as the reason tuple. [VERIFIED: tests/architecture/notify-closed-set-locks.test.ts:13-16,29-40; tests/architecture/catalog-uat.test.ts:1-40]
@@ -492,18 +492,18 @@ Security enforcement is enabled because `.planning/config.json` does not set `se
 
 | ASVS Category | Applies | Standard Control |
 |---------------|---------|------------------|
-| V2 Authentication | No | Phase 106 adds no identity or credential path. [VERIFIED: .planning/REQUIREMENTS.md:7-36] |
-| V3 Session Management | No | Phase 106 changes plugin classification, not Pi session state. [VERIFIED: .planning/REQUIREMENTS.md:7-36] |
+| V2 Authentication | No | Phase 106 adds no identity or credential path. [VERIFIED: .planning/workstreams/workflows-detection/REQUIREMENTS.md:7-36] |
+| V3 Session Management | No | Phase 106 changes plugin classification, not Pi session state. [VERIFIED: .planning/workstreams/workflows-detection/REQUIREMENTS.md:7-36] |
 | V4 Access Control | No new control | Existing scope and containment policy remains unchanged; no workflow write target is introduced. [VERIFIED: extensions/pi-claude-marketplace/orchestrators/plugin/install.ts:915-1248] |
 | V5 Input Validation | Yes | Admit the top-level declaration as opaque input, convert it only to a boolean presence signal, and stat one fixed literal directory. [VERIFIED: extensions/pi-claude-marketplace/domain/components/plugin.ts:34-44; extensions/pi-claude-marketplace/domain/resolver.ts:511-567] |
-| V6 Cryptography | No | Phase 106 adds no secret, signature, hash, or transport mechanism. [VERIFIED: .planning/REQUIREMENTS.md:7-36] |
+| V6 Cryptography | No | Phase 106 adds no secret, signature, hash, or transport mechanism. [VERIFIED: .planning/workstreams/workflows-detection/REQUIREMENTS.md:7-36] |
 
 ### Known Threat Patterns for This Stack
 
 | Pattern | STRIDE | Standard Mitigation |
 |---------|--------|---------------------|
 | Manifest-controlled path traversal | Tampering / Elevation of privilege | Ignore workflow payload paths. Stat only `path.join(pluginRoot, "workflows")` through the existing fixed convention path. [VERIFIED: extensions/pi-claude-marketplace/domain/resolver.ts:386-397,532-567] |
-| Unintended script execution | Elevation of privilege | Never read, import, spawn, validate, or materialize workflow contents. Test with a sentinel script and assert absence from all targets. [VERIFIED: .planning/REQUIREMENTS.md:20-36] |
+| Unintended script execution | Elevation of privilege | Never read, import, spawn, validate, or materialize workflow contents. Test with a sentinel script and assert absence from all targets. [VERIFIED: .planning/workstreams/workflows-detection/REQUIREMENTS.md:20-36] |
 | Soft signal bypasses structural validation | Tampering | Keep structural failure precedence and assert `--partial` cannot admit the both-defects case. [VERIFIED: extensions/pi-claude-marketplace/domain/resolver.ts:1619-1640] |
 | Unsupported artifact becomes persistent runtime state | Tampering | Store only the string in `compatibility.unsupported`; do not grow the materialized resource schema or reload response. [VERIFIED: extensions/pi-claude-marketplace/persistence/state-io.ts:81-126; extensions/pi-claude-marketplace/orchestrators/discover.ts:10-52] |
 | Surface-specific reason spoofing or drift | Repudiation | Route the typed kind through one closed-set classifier and byte-level catalog tests. [VERIFIED: extensions/pi-claude-marketplace/shared/probe-classifiers.ts:183-216; tests/architecture/catalog-uat.test.ts:1-40] |
@@ -533,7 +533,7 @@ Security enforcement is enabled because `.planning/config.json` does not set `se
 
 - Standard stack: HIGH — package versions and commands were read from `package.json`, and the local runtime was probed. [VERIFIED: package.json:8-33,74-92; local version probes, 2026-08-29]
 - Architecture: HIGH — the resolver, gates, ledger, persistence, classifier, and reload callers were traced from source. [VERIFIED: extensions/pi-claude-marketplace/domain/resolver.ts:511-1743; extensions/pi-claude-marketplace/orchestrators/plugin/install.ts:748-1248]
-- Pitfalls: HIGH — each risk follows from an existing boundary or locked decision and has an exact regression seam. [VERIFIED: .planning/phases/106-workflow-detection-and-partial-install/106-CONTEXT.md:21-55; tests/orchestrators/plugin/cross-surface-reason-parity.test.ts:100-185]
+- Pitfalls: HIGH — each risk follows from an existing boundary or locked decision and has an exact regression seam. [VERIFIED: .planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-CONTEXT.md:21-55; tests/orchestrators/plugin/cross-surface-reason-parity.test.ts:100-185]
 - Upstream format context: MEDIUM — checked against the current official Claude plugin reference through web research. [CITED: https://code.claude.com/docs/en/plugins-reference]
 
 **Research date:** 2026-08-29

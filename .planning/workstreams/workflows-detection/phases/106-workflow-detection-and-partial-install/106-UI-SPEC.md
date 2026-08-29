@@ -261,8 +261,8 @@ The post-verification probe found 21 applicable states. All 21 states have an ex
 | Source | Decisions used |
 |--------|----------------|
 | `106-CONTEXT.md` | Six locked unsupported-component, ordering, consent, persistence, and structural-precedence decisions |
-| `.planning/REQUIREMENTS.md` | WDET-01 through WDET-06 |
-| `.planning/ROADMAP.md` | Phase goal and five success criteria |
+| `.planning/workstreams/workflows-detection/REQUIREMENTS.md` | WDET-01 through WDET-06 |
+| `.planning/workstreams/workflows-detection/ROADMAP.md` | Phase goal and five success criteria |
 | `docs/output-catalog.md` | Existing glyphs, statuses, indentation, severity, hint, reload, and byte-parity grammar |
 | `shared/notify.ts` | Closed vocabularies and sole renderer authority |
 | `shared/probe-classifiers.ts` | Shared typed-kind-to-reason parity seam |

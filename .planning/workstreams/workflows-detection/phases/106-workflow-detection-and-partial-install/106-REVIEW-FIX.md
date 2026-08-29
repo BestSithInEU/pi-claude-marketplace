@@ -1,7 +1,7 @@
 ---
 phase: 106
 fixed_at: 2026-08-29T20:47:59Z
-review_path: .planning/phases/106-workflow-detection-and-partial-install/106-REVIEW.md
+review_path: .planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-REVIEW.md
 iteration: 1
 findings_in_scope: 1
 fixed: 1
@@ -12,7 +12,7 @@ status: all_fixed
 # Phase 106: code review fix report
 
 **Fixed at:** 2026-08-29T20:47:59Z
-**Source review:** `.planning/phases/106-workflow-detection-and-partial-install/106-REVIEW.md`
+**Source review:** `.planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-REVIEW.md`
 **Iteration:** 1
 
 **Summary:**

@@ -69,16 +69,16 @@ No `components.json` file exists, shadcn is not initialized, and the UI spec lis
 
 ## Files Audited
 
-- `.planning/phases/106-workflow-detection-and-partial-install/106-UI-SPEC.md`
-- `.planning/phases/106-workflow-detection-and-partial-install/106-CONTEXT.md`
-- `.planning/phases/106-workflow-detection-and-partial-install/106-01-PLAN.md`
-- `.planning/phases/106-workflow-detection-and-partial-install/106-01-SUMMARY.md`
-- `.planning/phases/106-workflow-detection-and-partial-install/106-02-PLAN.md`
-- `.planning/phases/106-workflow-detection-and-partial-install/106-02-SUMMARY.md`
-- `.planning/phases/106-workflow-detection-and-partial-install/106-03-PLAN.md`
-- `.planning/phases/106-workflow-detection-and-partial-install/106-03-SUMMARY.md`
-- `.planning/phases/106-workflow-detection-and-partial-install/106-04-PLAN.md`
-- `.planning/phases/106-workflow-detection-and-partial-install/106-04-SUMMARY.md`
+- `.planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-UI-SPEC.md`
+- `.planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-CONTEXT.md`
+- `.planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-01-PLAN.md`
+- `.planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-01-SUMMARY.md`
+- `.planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-02-PLAN.md`
+- `.planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-02-SUMMARY.md`
+- `.planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-03-PLAN.md`
+- `.planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-03-SUMMARY.md`
+- `.planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-04-PLAN.md`
+- `.planning/workstreams/workflows-detection/phases/106-workflow-detection-and-partial-install/106-04-SUMMARY.md`
 - `extensions/pi-claude-marketplace/domain/components/plugin.ts`
 - `extensions/pi-claude-marketplace/domain/resolver.ts`
 - `extensions/pi-claude-marketplace/shared/notify-reasons.ts`

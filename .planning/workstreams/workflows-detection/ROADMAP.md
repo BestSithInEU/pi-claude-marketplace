@@ -12,7 +12,7 @@ The six requirements form one resolver-to-install workflow, so standard granular
 
 **Phase numbering:** Phase 106 continues the global sequence after the completed Phase 105.
 
-- [ ] **Phase 106: Workflow Detection and Partial Install** - Users can identify workflow-bearing plugins and install only their supported components with explicit consent.
+- [x] **Phase 106: Workflow Detection and Partial Install** - Users can identify workflow-bearing plugins and install only their supported components with explicit consent. (completed 2026-08-29)
 
 ## Phase Details
 
@@ -53,4 +53,4 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 106. Workflow Detection and Partial Install | 4/4 | In Progress|  |
+| 106. Workflow Detection and Partial Install | 4/4 | Complete    | 2026-08-29 |
