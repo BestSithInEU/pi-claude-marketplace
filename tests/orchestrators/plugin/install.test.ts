@@ -5584,6 +5584,66 @@ test("WDET-02: a conventional workflows directory requires partial install and n
   });
 });
 
+test("D-106-06: structural failure wins over a workflows soft signal under partial install", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "install-workflow-structural-"));
+    const workflowName = "structural-sentinel.workflow.yml";
+    try {
+      const locations = locationsFor("project", cwd);
+      const seeded = await seedPathMarketplaceWithPlugin({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        marketplaceName: "mp",
+        pluginName: "helper",
+        skills: [{ sourceName: "tool" }],
+        workflows: [{ sourceName: workflowName }],
+      });
+      await writeFile(path.join(seeded.pluginRoot, ".mcp.json"), "{ not json");
+
+      const { ctx, pi, notifications } = makeCtx();
+      const outcome = await installPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "helper",
+        partial: true,
+      });
+
+      assert.deepEqual(notifications, [
+        {
+          severity: "error",
+          message:
+            "A plugin operation has failed.\n\n" +
+            "● mp [project]\n" +
+            "  ⊘ helper (unavailable) {unsupported source}",
+        },
+      ]);
+      assert.equal(outcome.status, "failed");
+      assert.equal(Object.hasOwn(outcome, "pluginRoot"), false);
+
+      const after = await loadState(locations.extensionRoot);
+      assert.equal(after.marketplaces["mp"]?.plugins.helper, undefined);
+      await assert.rejects(stat(path.join(locations.skillsTargetDir, "helper-tool")), {
+        code: "ENOENT",
+      });
+      assert.equal(
+        (await filesBelow(locations.scopeRoot)).some(
+          (file) => path.basename(file) === workflowName,
+        ),
+        false,
+      );
+      assert.equal(
+        await readFile(path.join(seeded.pluginRoot, "workflows", workflowName), "utf8"),
+        "steps: []\n",
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
 test("FORCE-01: force on an unsupported plugin installs the supported components and skips the unsupported ones", async () => {
   await withHermeticHome(async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "install-force01-"));
