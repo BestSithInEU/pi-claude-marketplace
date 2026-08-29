@@ -36,17 +36,18 @@ test("OUT-08: REASONS is the closed 44-entry reason set", () => {
   // for a dropped non-carve-out component kind (37 -> 38).
   // OUT-01 / DFEN-04: +1 for the `installs disabled` member -- the marker for an
   // install that landed disabled on the plugin's own declaration (38 -> 39).
-  // WDET-04 / D-106-04: +1 for the dedicated `workflows` member (39 -> 40).
   // CMP-4 / SCOPE-01: +1 for `marketplace not added to user scope` -- the SECOND
   // structural marketplace-absent marker, replacing `marketplace not added` on the row when
-  // the container was found in the scope the command did not target (40 -> 41),
+  // the container was found in the scope the command did not target (39 -> 40),
   // +1 for its project-target sibling `marketplace not added to project scope`
-  // (41 -> 42).
+  // (40 -> 41).
   // SCOPE-01 / D-01: +2 for the `marketplace in user scope` /
   // `marketplace in project scope` CONTENT pair -- the cross-scope qualifier an
   // absent-target lifecycle row joins to `not installed` so the
   // container-is-one-scope-over miss stops rendering byte-identically to the
-  // container-is-here miss (42 -> 44).
+  // container-is-here miss (41 -> 43).
+  // WDET-04 / D-106-04: +1 for the dedicated final `workflows` member
+  // (43 -> 44).
   assert.equal(REASONS.length, 44);
 });
 

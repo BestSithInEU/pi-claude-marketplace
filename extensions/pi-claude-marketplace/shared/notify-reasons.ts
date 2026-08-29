@@ -21,9 +21,9 @@ import type { SoftDepStatus } from "../platform/pi-api.ts";
  * brought the fourth topic group with it (D-102-06). `COMPAT-01` pins the
  * membership by enumeration and `notify-closed-set-locks.test.ts` pins the
  * length, so the two sentences above cannot drift from the tuple again without
- * a red test. WDET-04 / D-106-04 moved the count from 39 to 40 when the
- * dedicated `workflows` unsupported reason joined the tail. CMP-4 / SCOPE-01
- * and SCOPE-01 / D-01 then added four scope-qualified reasons (40 to 44).
+ * a red test. CMP-4 / SCOPE-01 added two structural scope reasons (39 to 41).
+ * SCOPE-01 / D-01 added two content scope reasons (41 to 43). WDET-04 /
+ * D-106-04 appended the dedicated `workflows` reason (43 to 44).
  *
  * The idempotent group keeps an `as const` tuple because `skipSeverity` needs
  * a runtime `Set` to test against; the unsupported and failure groups are
@@ -93,8 +93,8 @@ export function companionSeverity(
 
 /**
  * D-09: unsupported-components / soft-dep reasons -- the topic group the user
- * named explicitly (hooks / LSP / companion-extension soft deps / unsupported
- * source / no-longer-installable).
+ * named explicitly (hooks / LSP / workflows / companion-extension soft deps /
+ * unsupported source / no-longer-installable).
  */
 type UnsupportedReason =
   | "unsupported hooks"

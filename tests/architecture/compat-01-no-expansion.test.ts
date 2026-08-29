@@ -173,7 +173,6 @@ test("COMPAT-01: REASONS holds exactly its inherited members, in order", () => {
       "malformed skill",
       "malformed command",
       "installs disabled",
-      "workflows",
       // SCOPE-01 / D-01, post-COMPAT-01: the cross-scope CONTENT pair an
       // absent-target lifecycle row joins to `not installed`. Amended in
       // deliberately, like the two structural markers above -- and unlike them,
@@ -181,8 +180,11 @@ test("COMPAT-01: REASONS holds exactly its inherited members, in order", () => {
       // plugin row they ride, not the marketplace.
       "marketplace in user scope",
       "marketplace in project scope",
+      // WDET-04 / D-106-04: workflows is the only reason added after the 43
+      // inherited members. Appending it preserves every inherited index.
+      "workflows",
     ],
-    "COMPAT-01: no reason token may be added, removed, or renamed. The order is catalog-stable: a new token sits beside its structural siblings, not necessarily at the tail, and arrives with its catalog row, renderer arm, and fixture in the same change.",
+    "COMPAT-01: no reason token may be added, removed, or renamed. The order is catalog-stable: a new token appends at the tail and arrives with its catalog row, renderer arm, and fixture in the same change.",
   );
 });
 
