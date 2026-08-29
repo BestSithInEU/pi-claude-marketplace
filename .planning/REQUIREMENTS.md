@@ -8,18 +8,18 @@
 
 ### Workflow Detection
 
-- [ ] **WDET-01**: The schemas accept a `workflows` declaration in marketplace entries and `plugin.json` files.
-- [ ] **WDET-02**: The resolver finds `<pluginRoot>/workflows/` without a manifest declaration. This includes the current `claude-security` and `code-modernization` layouts.
-- [ ] **WDET-03**: A plugin with workflows resolves as `partially-available` and records `workflows` as an unsupported component.
+- [x] **WDET-01**: The schemas accept a `workflows` declaration in marketplace entries and `plugin.json` files.
+- [x] **WDET-02**: The resolver finds `<pluginRoot>/workflows/` without a manifest declaration. This includes the current `claude-security` and `code-modernization` layouts.
+- [x] **WDET-03**: A plugin with workflows resolves as `partially-available` and records `workflows` as an unsupported component.
 
 ### User Surfaces
 
 - [ ] **WDET-04**: Each unsupported-reason surface shows the exact `{workflows}` reason.
-- [ ] **WDET-05**: A normal install rejects the partial plugin. An install with `--partial` installs only its supported components.
+- [x] **WDET-05**: A normal install rejects the partial plugin. An install with `--partial` installs only its supported components.
 
 ### Scope Boundary
 
-- [ ] **WDET-06**: The extension does not materialize or execute workflow files.
+- [x] **WDET-06**: The extension does not materialize or execute workflow files.
 
 ## Future Requirements
 
@@ -41,12 +41,12 @@ The roadmap maps each requirement to one phase.
 
 | Requirement | Phase | Status |
 | ----------- | ----- | ------ |
-| WDET-01 | Phase 106 | Pending |
-| WDET-02 | Phase 106 | Pending |
-| WDET-03 | Phase 106 | Pending |
+| WDET-01 | Phase 106 | Complete |
+| WDET-02 | Phase 106 | Complete |
+| WDET-03 | Phase 106 | Complete |
 | WDET-04 | Phase 106 | Pending |
-| WDET-05 | Phase 106 | Pending |
-| WDET-06 | Phase 106 | Pending |
+| WDET-05 | Phase 106 | Complete |
+| WDET-06 | Phase 106 | Complete |
 
 **Coverage:**
 

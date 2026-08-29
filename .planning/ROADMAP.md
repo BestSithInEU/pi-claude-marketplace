@@ -29,7 +29,7 @@ The six requirements form one resolver-to-install workflow, so standard granular
   4. A normal install rejects an affected plugin. `--partial` installs only its supported components.
   5. After `/reload`, supported artifacts work, but Pi has no materialized workflow files and does not execute workflows.
 
-**Plans**: 1/4 plans executed
+**Plans**: 3/4 plans executed
 
 Plans:
 **Wave 1**
@@ -38,8 +38,8 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 106-02-PLAN.md - Opaque schema admission plus strict and loose resolver coverage
-- [ ] 106-03-PLAN.md - Rejection, rollback, retry, persistence, and no-materialization boundaries
+- [x] 106-02-PLAN.md - Opaque schema admission plus strict and loose resolver coverage
+- [x] 106-03-PLAN.md - Rejection, rollback, retry, persistence, and no-materialization boundaries
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -53,4 +53,4 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 106. Workflow Detection and Partial Install | 1/4 | In Progress|  |
+| 106. Workflow Detection and Partial Install | 3/4 | In Progress|  |
