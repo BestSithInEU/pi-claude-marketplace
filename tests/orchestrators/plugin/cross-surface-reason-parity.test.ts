@@ -117,6 +117,7 @@ const PER_KIND_PARITY_CASES = [
   // `unsupported component` marker (was the generic source-axis token).
   { kind: "monitors", note: "contains monitors", expected: "unsupported component" },
   { kind: "themes", note: "contains themes", expected: "unsupported component" },
+  { kind: "workflows", note: "contains workflows", expected: "workflows" },
 ] as const;
 
 for (const { kind, note, expected } of PER_KIND_PARITY_CASES) {
@@ -181,6 +182,24 @@ test("RSTATE-05 / SURF-01 / D-64-02 multi-kind unsupported markers are byte-iden
     listInfoOut,
     installOut,
     "list/info and install multi-kind markers must be byte-identical",
+  );
+});
+
+test("WDET-04: multi-kind workflows reasons are byte-identical across list, info, and install", () => {
+  const kinds = ["lspServers", "themes", "workflows"] as const;
+  const listInfoOut = narrowUnsupportedKinds(kinds);
+  const installOut = narrowResolverReasons(
+    ["contains lspServers", "contains themes", "contains workflows"],
+    kinds,
+    true,
+  );
+
+  assert.deepEqual(listInfoOut, ["lsp", "unsupported component", "workflows"]);
+  assert.deepEqual(installOut, ["lsp", "unsupported component", "workflows"]);
+  assert.deepEqual(
+    listInfoOut,
+    installOut,
+    "list/info and install must keep workflows last in canonical reason order",
   );
 });
 
