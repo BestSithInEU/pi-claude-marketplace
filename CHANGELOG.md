@@ -2,9 +2,9 @@
 
 ## [0.18.1] - 2026-08-29
 
-- Plugins that declare `workflows` or contain a literal `workflows/` directory now report `(partially-available) {workflows}`.
+- Structurally valid plugins that declare `workflows` or contain a literal `workflows/` directory now report `(partially-available) {workflows}`.
 - A normal install rejects these plugins. `--partial` installs only supported components.
-- Workflow files remain opaque. The extension does not copy, discover, register, or run them.
+- Workflow contents remain opaque. The extension does not inspect them, materialize them into Pi targets, register them, or run them.
 
 ## [0.18.0] - 2026-08-29
 

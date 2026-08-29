@@ -358,8 +358,10 @@ const SUPPORTED_COMPONENT_PATH_KINDS = ["skills", "commands", "agents"] as const
 type SupportedPathKind = (typeof SUPPORTED_COMPONENT_PATH_KINDS)[number];
 
 /**
- * PR-3: any of these kinds declared in entry OR manifest disqualifies install
- * with note `contains <kind>`.
+ * PR-3: a declaration or matching convention for these kinds selects the
+ * `partially-available` arm and adds the note `contains <kind>`. A normal
+ * install rejects that arm. With `--partial`, the install admits its supported
+ * components.
  *
  * SECURITY (T-02-25): The list is closed. A new kind upstream that's neither
  * in SUPPORTED_COMPONENT_KINDS nor in this list would be silently ignored.
