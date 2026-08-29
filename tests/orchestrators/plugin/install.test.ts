@@ -527,7 +527,7 @@ test("PI-3: plugin name not in marketplace plugins[] -> V2 failed/{not in manife
   });
 });
 
-test("ATTR-01 / M1: marketplace itself absent -> standalone {not added} on the marketplace subject", async () => {
+test("ATTR-01 / M1: marketplace itself absent -> standalone {marketplace not added} on the marketplace subject", async () => {
   await withHermeticHome(async () => {
     const cwd = await mkdtemp(path.join(tmpdir(), "install-pi3b-"));
     try {
@@ -553,7 +553,7 @@ test("ATTR-01 / M1: marketplace itself absent -> standalone {not added} on the m
       // not-added state.
       assert.equal(
         notifications[0]?.message,
-        "A marketplace operation has failed.\n\n⊘ ghost-mp [project] (failed) {not added}",
+        "A marketplace operation has failed.\n\n⊘ ghost-mp [project] (failed) {marketplace not added}",
       );
       assert.equal(outcome.status, "failed");
 
@@ -2946,11 +2946,27 @@ test("CMP-4 / PI-16: user-target install cannot source a project-only marketplac
       // The marketplace is "not added in user", surfaced via the standalone
       // `marketplace-not-added` variant with the `[user]` bracket -- NOT
       // `{not in manifest}` on a plugin row.
+      //
+      // CMP-4 / SCOPE-01: the container DOES exist at project scope, so the
+      // brace carries the cross-scope structural token INSTEAD of `marketplace not added`.
+      // Byte-exact, and still a two-block surface -- the token rides the row,
+      // so no third block and no prose trailer.
       assert.equal(notifications.length, 1);
       assert.equal(notifications[0]?.severity, "error");
       assert.equal(
         notifications[0]?.message,
-        "A marketplace operation has failed.\n\n⊘ mp [user] (failed) {not added}",
+        "A marketplace operation has failed.\n\n" +
+          "⊘ mp [user] (failed) {marketplace not added to user scope}",
+      );
+      // The two structural claims are mutually exclusive: the container either
+      // does not exist or exists elsewhere, never both.
+      assert.ok(
+        !(notifications[0]?.message ?? "").includes("{marketplace not added}"),
+        "the cross-scope token REPLACES `marketplace not added`; it must not join it",
+      );
+      assert.ok(
+        !(notifications[0]?.message ?? "").includes("--local"),
+        "the scope miss must not name --local (orthogonal axis)",
       );
 
       const userAfter = await loadState(userLocations.extensionRoot);
@@ -6745,6 +6761,80 @@ test("PI-15: an mcp phase that cannot run unwinds the hooks bridge and leaves no
         after.marketplaces["mp"]?.plugins["hello"],
         undefined,
         "a failed install must write no record",
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CMP-4 / SCOPE-01 -- the cross-scope remedy trailer's two negative arms. Both
+// must render the bare `{marketplace not added}` row byte-identically to the pre-remedy
+// form: the trailer is advisory and may never alter, delay, or replace the
+// failure it annotates.
+// ---------------------------------------------------------------------------
+
+test("CMP-4 / SCOPE-01: absent in BOTH scopes renders the bare row with no remedy trailer", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "install-noremedy-"));
+    try {
+      const { ctx, pi, notifications } = makeCtx();
+      await installPlugin({
+        ctx,
+        pi,
+        scope: "user",
+        cwd,
+        marketplace: "ghost-mp",
+        plugin: "hello",
+      });
+
+      assert.equal(notifications.length, 1);
+      assert.equal(notifications[0]?.severity, "error");
+      assert.equal(
+        notifications[0]?.message,
+        "A marketplace operation has failed.\n\n⊘ ghost-mp [user] (failed) {marketplace not added}",
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("CMP-4 / SCOPE-01: an UNREADABLE other-scope state.json still renders the bare row and does NOT throw", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "install-corrupt-other-"));
+    try {
+      // The probe reads PROJECT state to decide whether the remedy applies.
+      // Corrupt it: `loadState` throws on malformed JSON. The probe runs AFTER
+      // `withLockedStateTransaction` has returned, so its try/catch is gone,
+      // and no edge handler catches -- an escaping throw would surface as an
+      // unhandled rejection with ZERO notifications instead of a failure row.
+      const projectLocations = locationsFor("project", cwd);
+      await mkdir(projectLocations.extensionRoot, { recursive: true });
+      await writeFile(
+        path.join(projectLocations.extensionRoot, "state.json"),
+        "{ this is not json",
+        "utf8",
+      );
+
+      const { ctx, pi, notifications } = makeCtx();
+      await installPlugin({
+        ctx,
+        pi,
+        scope: "user",
+        cwd,
+        marketplace: "ghost-mp",
+        plugin: "hello",
+      });
+
+      // The row survives intact -- losing the advisory remedy is the correct
+      // degradation; losing the failure row is not.
+      assert.equal(notifications.length, 1);
+      assert.equal(notifications[0]?.severity, "error");
+      assert.equal(
+        notifications[0]?.message,
+        "A marketplace operation has failed.\n\n⊘ ghost-mp [user] (failed) {marketplace not added}",
       );
     } finally {
       await rm(cwd, { recursive: true, force: true });

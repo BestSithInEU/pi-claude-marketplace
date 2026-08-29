@@ -634,14 +634,46 @@ A plugin operation has failed.
 
 ### Failure -- marketplace not added (ATTR-01 / ATTR-08)
 
-Triggered when `install <plugin>@<marketplace>` names a marketplace that is NOT added in the target scope and the CMP-3 project-to-user fallback ALSO misses. The failure subject is the MARKETPLACE, not the plugin: the orchestrator emits the standalone Phase 46 `MarketplaceNotAddedMessage` variant (`kind: "marketplace-not-added"`, `name` set to the marketplace name) -- NOT `{not in manifest}` on a plugin row. This is the ATTR-08 split: "marketplace absent" reads `{not added}` on the marketplace subject, while "plugin absent from a PRESENT manifest" stays `{not in manifest}` on the plugin row (the `failure-runtime-with-cause` / PI-3 path). install always has a resolved scope (the edge defaults it), so the row always carries the `[scope]` bracket communicating "not added in the scope you asked for" (SCOPE-01). Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare column-0 detail row as its own block (GRAM-01 / GRAM-02). No cause-chain trailer. Severity `error`; no reload-hint.
+Triggered when `install <plugin>@<marketplace>` names a marketplace that is NOT added in the target scope and the CMP-3 project-to-user fallback ALSO misses. The failure subject is the MARKETPLACE, not the plugin: the orchestrator emits the standalone Phase 46 `MarketplaceNotAddedMessage` variant (`kind: "marketplace-not-added"`, `name` set to the marketplace name) -- NOT `{not in manifest}` on a plugin row. This is the ATTR-08 split: "marketplace absent" reads `{marketplace not added}` on the marketplace subject, while "plugin absent from a PRESENT manifest" stays `{not in manifest}` on the plugin row (the `failure-runtime-with-cause` / PI-3 path). install always has a resolved scope (the edge defaults it), so the row always carries the `[scope]` bracket communicating "not added in the scope you asked for" (SCOPE-01). Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare column-0 detail row as its own block (GRAM-01 / GRAM-02). No cause-chain trailer. Severity `error`; no reload-hint.
 
 <!-- catalog-state: missing-marketplace-not-added -->
 
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp [project] (failed) {not added}
+⊘ ghost-mp [project] (failed) {marketplace not added}
+```
+
+### Failure -- marketplace not added, cross-scope (CMP-4 / SCOPE-01)
+
+The same failure as above, with a DIFFERENT structural reason token, emitted when the marketplace CONTAINER is registered in the scope the command did NOT target. The bare row above says only that the container is absent; these two say it exists one scope over. The command still FAILS in both directions -- there is no retarget -- and the `error` severity and the summary line are unchanged. A miss in BOTH scopes renders the bare row above byte-for-byte.
+
+The qualified token REPLACES `marketplace not added` rather than joining it. The two are competing structural claims about one subject -- the plain token says the container does not exist, the qualified one says it exists but not where the command looked -- so a brace carrying both would state both.
+
+A qualified token requires a `[scope]` bracket. An ABSENT bracket means the caller consulted BOTH scopes and both missed (D-03), so there is no other scope left to be present in and the plain token is the only truthful one.
+
+The token names the scope that MISSED, matching the bracket beside it. It is a reason, and reasons in this catalog describe state; the remedy (`--scope <other>`, or `marketplace add` at the target scope) is left to the operator, which is what keeps one token usable by every verb that renders this row rather than only by `install`.
+
+Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the detail row, separated by one blank line, both at column 0. Severity `error`; no reload-hint.
+
+**User target, container at project.** The repo-bundled-marketplace case: `install <plugin>@<marketplace>` with no `--scope` targets `user` and the marketplace is registered only at `project`. D-29 is Locked, so a user-target install may source only from user scope (CMP-4) -- no fallback, no retarget.
+
+<!-- catalog-state: missing-marketplace-not-added-cross-scope -->
+
+```text
+A marketplace operation has failed.
+
+⊘ mp [user] (failed) {marketplace not added to user scope}
+```
+
+**Project target, container at user.** Reachable from every verb EXCEPT `install`: the CMP-3 fallback lets a project-target install source a user-scope marketplace and adopt it into project scope, so `install` never renders this row. `info`, `update`, `reinstall`, `uninstall`, `enable`, `disable`, `marketplace info`, `marketplace update` and `marketplace remove` carry no such fallback and miss.
+
+<!-- catalog-state: missing-marketplace-not-added-cross-scope-project -->
+
+```text
+A marketplace operation has failed.
+
+⊘ mp [project] (failed) {marketplace not added to project scope}
 ```
 
 ### Failure -- a name a DISABLED plugin still owns (ENBL-18)
@@ -700,14 +732,14 @@ Marketplace header is bare (SUB-BRANCH A); plugin row is `failed` with the typed
 
 ### Failure -- marketplace not added (ATTR-04 / SCOPE-01)
 
-Triggered when `uninstall <plugin>@<marketplace>` names a marketplace that was NEVER added in the requested scope, OR is present only in the OTHER scope. ATTR-04 makes this LOUD: the orchestrator emits the standalone `MarketplaceNotAddedMessage` variant (`{not added}` on the marketplace subject) instead of the former silent no-output. This is DISTINCT from the PU-5 already-gone path for a plugin record whose marketplace IS present (covered by the `already-gone-not-installed` state below). The `[scope]` bracket carries the REQUESTED scope: for an explicit `--scope` (or an other-scope-only target) the bracket communicates "not added in the scope you asked for" (SCOPE-01); the operator infers the other scope. A bare lifecycle form that misses in BOTH scopes carries no bracket. Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare column-0 detail row as its own block (GRAM-01 / GRAM-02). Severity `error`; no reload-hint.
+Triggered when `uninstall <plugin>@<marketplace>` names a marketplace that was NEVER added in EITHER scope. A marketplace present only in the OTHER scope does NOT reach this state (SCOPE-01): nothing is installed at the requested scope, so the row's subject is the PLUGIN and it renders the `already-gone-cross-scope` state below. Naming the marketplace there would misdirect -- adding it at the requested scope would not make the uninstall succeed -- while a marketplace absent from BOTH scopes keeps this row so a typo'd marketplace name is not disguised as a plugin that merely is not installed. ATTR-04 makes this LOUD: the orchestrator emits the standalone `MarketplaceNotAddedMessage` variant (`{marketplace not added}` on the marketplace subject) instead of the former silent no-output. This is DISTINCT from the PU-5 already-gone path for a plugin record whose marketplace IS present (covered by the `already-gone-not-installed` state below). The `[scope]` bracket carries the REQUESTED scope: for an explicit `--scope` (or an other-scope-only target) the bracket communicates "not added in the scope you asked for" (SCOPE-01); the operator infers the other scope. A bare lifecycle form that misses in BOTH scopes carries no bracket. Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare column-0 detail row as its own block (GRAM-01 / GRAM-02). Severity `error`; no reload-hint.
 
 <!-- catalog-state: missing-marketplace-not-added -->
 
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp [user] (failed) {not added}
+⊘ ghost-mp [user] (failed) {marketplace not added}
 ```
 
 ### Failure -- already gone, plugin not installed (D-01 / PU-5)
@@ -721,6 +753,19 @@ A plugin operation has failed.
 
 ● official [user]
   ⊘ helper (failed) {not installed}
+```
+
+### Failure -- not installed, marketplace one scope over (SCOPE-01)
+
+Triggered when `uninstall <plugin>@<marketplace> --scope <scope>` names a scope whose state.json holds no such marketplace container, while the OTHER scope does. Nothing of that marketplace is installed at the named scope, so the PLUGIN is the row's subject (a marketplace absent from BOTH scopes keeps `missing-marketplace-not-added` instead). The brace carries the container's real scope beside `not installed`, because the remedy differs from the `already-gone-not-installed` state above: there the container is here and the fix is that the record is simply gone; here the fix is to target the other scope or add the marketplace at the one named. `marketplace in project scope` is a CONTENT reason and JOINS `not installed` rather than replacing it, unlike the structural `marketplace not added*` markers. The scope word names where the container IS, always the OPPOSITE of the row's `[scope]` bracket. The row keeps uninstall's `failed` token (its render map has no `skipped` arm). Severity `error`; no reload-hint.
+
+<!-- catalog-state: already-gone-cross-scope -->
+
+```text
+A plugin operation has failed.
+
+● official [user]
+  ⊘ helper (failed) {not installed, marketplace in project scope}
 ```
 
 ______________________________________________________________________
@@ -898,28 +943,41 @@ A plugin operation has failed.
   ⊘ hello (skipped) {not installed}
 ```
 
+### Failure -- not installed, marketplace one scope over (SCOPE-01)
+
+Triggered when `reinstall <plugin>@<marketplace> --scope <scope>` names a scope whose state.json holds no such marketplace container, while the OTHER scope does. The plugin is the row's subject, and the brace names where the container really is beside `not installed`, so the row is distinguishable from the `standalone-not-installed-error` state above: there the container is here and the fix is to install the plugin, here the fix is to target the other scope or add the marketplace at the one named. `marketplace in user scope` is a CONTENT reason and JOINS `not installed` rather than replacing it. The scope word names where the container IS, always the OPPOSITE of the row's `[scope]` bracket. Severity `error`; no reload-hint.
+
+<!-- catalog-state: reinstall-not-installed-cross-scope -->
+
+```text
+A plugin operation has failed.
+
+● mp [project]
+  ⊘ hello (skipped) {not installed, marketplace in user scope}
+```
+
 ### Failure -- marketplace not added, explicit scope (ATTR-03 / SCOPE-01)
 
-Triggered when `reinstall <plugin>@<marketplace>` or `reinstall @<marketplace>` names a marketplace that is NOT added in the requested `--scope` (or is present only in the OTHER scope). ATTR-03 makes the attribution form-INDEPENDENT: the explicit-scope-plugin, explicit-scope-marketplace, and bare forms ALL emit the standalone `MarketplaceNotAddedMessage` variant (`{not added}` on the marketplace subject) BEFORE any cascade row exists -- replacing the former per-form divergence (`(skipped) {not installed}` for the explicit-scope plugin form via a synthesized phantom target; `(failed) {not found}` for the explicit-scope-marketplace and bare forms via a raw throw -> synthetic `(reinstall)` row). The `[scope]` bracket carries the REQUESTED scope: the operator infers the other scope (SCOPE-01; resolved Open Question #1 -- the requested-scope bracket, no other-scope phrase). The legitimate "marketplace present, plugin not installed" case keeps its `(skipped) {not installed}` outcome -- only the marketplace-absent precondition is re-attributed. Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare column-0 detail row as its own block (GRAM-01 / GRAM-02). No cause-chain trailer. Severity `error`; no reload-hint.
+Triggered when `reinstall @<marketplace>` names a marketplace that is NOT added in the requested `--scope`, or when `reinstall <plugin>@<marketplace>` names one absent from BOTH scopes. SCOPE-01: the PLUGIN form with the marketplace present only in the OTHER scope renders the `reinstall-not-installed-cross-scope` row instead -- nothing is installed at the requested scope, so the plugin is the subject. ATTR-03 makes the attribution form-INDEPENDENT: the explicit-scope-plugin, explicit-scope-marketplace, and bare forms ALL emit the standalone `MarketplaceNotAddedMessage` variant (`{marketplace not added}` on the marketplace subject) BEFORE any cascade row exists -- replacing the former per-form divergence (`(skipped) {not installed}` for the explicit-scope plugin form via a synthesized phantom target; `(failed) {not found}` for the explicit-scope-marketplace and bare forms via a raw throw -> synthetic `(reinstall)` row). The `[scope]` bracket carries the REQUESTED scope: the operator infers the other scope (SCOPE-01; resolved Open Question #1 -- the requested-scope bracket, no other-scope phrase). The legitimate "marketplace present, plugin not installed" case keeps its `(skipped) {not installed}` outcome -- only the marketplace-absent precondition is re-attributed. Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare column-0 detail row as its own block (GRAM-01 / GRAM-02). No cause-chain trailer. Severity `error`; no reload-hint.
 
 <!-- catalog-state: missing-marketplace-not-added -->
 
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp [project] (failed) {not added}
+⊘ ghost-mp [project] (failed) {marketplace not added}
 ```
 
 ### Failure -- marketplace not added, bare form absent from both scopes (ATTR-03)
 
-Triggered when the bare `reinstall @<marketplace>` form (no `--scope`) names a marketplace that is absent in BOTH scopes. The same standalone `{not added}` variant fires, but with NO `[scope]` bracket (the absent-from-both form: there is no requested scope to report). Byte-identical to `info`'s `missing-marketplace-not-added-absent-from-both` state. Severity `error`; no reload-hint.
+Triggered when the bare `reinstall @<marketplace>` form (no `--scope`) names a marketplace that is absent in BOTH scopes. The same standalone `{marketplace not added}` variant fires, but with NO `[scope]` bracket (the absent-from-both form: there is no requested scope to report). Byte-identical to `info`'s `missing-marketplace-not-added-absent-from-both` state. Severity `error`; no reload-hint.
 
 <!-- catalog-state: missing-marketplace-not-added-absent-from-both -->
 
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp (failed) {not added}
+⊘ ghost-mp (failed) {marketplace not added}
 ```
 
 ______________________________________________________________________
@@ -1137,26 +1195,39 @@ A targeted `update <plugin>@<marketplace>` against a DISABLED record that is ALR
 
 ### Failure -- marketplace not added, explicit scope (ATTR-02 / SCOPE-01)
 
-Triggered when `update <plugin>@<marketplace>` or `update @<marketplace>` names a marketplace that is NOT added in the requested `--scope` (or is present only in the OTHER scope). ATTR-02 makes the attribution form-INDEPENDENT: BOTH the `<plugin>@<mp>` and `@<mp>` forms flow through `enumerateMarketplaceTarget` and emit the standalone `MarketplaceNotAddedMessage` variant (`{not added}` on the marketplace subject) BEFORE any cascade row exists -- replacing the former raw `Error` (M10) / `MarketplaceNotFoundError` (M11) that escaped to a synthetic `(failed) {not found}` row. No raw throw escapes the orchestrator for the marketplace-existence case. The `[scope]` bracket carries the REQUESTED scope: the operator infers the other scope (SCOPE-01; resolved Open Question #1 -- the requested-scope bracket, no other-scope phrase). The cascade path (`updateSinglePlugin` / `preflightUpdate`) keeps its non-throwing concurrent-removal outcome and is unaffected (Pitfall 3 / A3). Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare column-0 detail row as its own block (GRAM-01 / GRAM-02). No cause-chain trailer. Severity `error`; no reload-hint.
+Triggered when `update @<marketplace>` names a marketplace that is NOT added in the requested `--scope`, or when `update <plugin>@<marketplace>` names one absent from BOTH scopes. SCOPE-01: the PLUGIN form with the marketplace present only in the OTHER scope renders the `update-not-installed-cross-scope` row instead -- nothing is installed at the requested scope, so the plugin is the subject. ATTR-02 makes the attribution form-INDEPENDENT: BOTH the `<plugin>@<mp>` and `@<mp>` forms flow through `enumerateMarketplaceTarget` and emit the standalone `MarketplaceNotAddedMessage` variant (`{marketplace not added}` on the marketplace subject) BEFORE any cascade row exists -- replacing the former raw `Error` (M10) / `MarketplaceNotFoundError` (M11) that escaped to a synthetic `(failed) {not found}` row. No raw throw escapes the orchestrator for the marketplace-existence case. The `[scope]` bracket carries the REQUESTED scope: the operator infers the other scope (SCOPE-01; resolved Open Question #1 -- the requested-scope bracket, no other-scope phrase). The cascade path (`updateSinglePlugin` / `preflightUpdate`) keeps its non-throwing concurrent-removal outcome and is unaffected (Pitfall 3 / A3). Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare column-0 detail row as its own block (GRAM-01 / GRAM-02). No cause-chain trailer. Severity `error`; no reload-hint.
 
 <!-- catalog-state: missing-marketplace-not-added -->
 
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp [user] (failed) {not added}
+⊘ ghost-mp [user] (failed) {marketplace not added}
+```
+
+### Failure -- not installed, marketplace one scope over (SCOPE-01)
+
+Triggered when `update <plugin>@<marketplace> --scope <scope>` names a scope whose state.json holds no such marketplace container, while the OTHER scope does. The plugin is the row's subject, and the brace names where the container really is beside `not installed`, so the row is distinguishable from the plain absent-target skip an in-scope container yields: there the container is here and the fix is to install the plugin, here the fix is to target the other scope or add the marketplace at the one named. `marketplace in project scope` is a CONTENT reason and JOINS `not installed` rather than replacing it, unlike the structural `marketplace not added*` markers. The scope word names where the container IS, always the OPPOSITE of the row's `[scope]` bracket. Severity `error`; no reload-hint.
+
+<!-- catalog-state: update-not-installed-cross-scope -->
+
+```text
+A plugin operation has failed.
+
+● mp [user]
+  ⊘ hello (skipped) {not installed, marketplace in project scope}
 ```
 
 ### Failure -- marketplace not added, bare form absent from both scopes (ATTR-02)
 
-Triggered when the bare `update @<marketplace>` form (no `--scope`) names a marketplace that is absent in BOTH scopes. The same standalone `{not added}` variant fires, but with NO `[scope]` bracket (the absent-from-both form: there is no requested scope to report). Byte-identical to `info`'s `missing-marketplace-not-added-absent-from-both` state. Severity `error`; no reload-hint.
+Triggered when the bare `update @<marketplace>` form (no `--scope`) names a marketplace that is absent in BOTH scopes. The same standalone `{marketplace not added}` variant fires, but with NO `[scope]` bracket (the absent-from-both form: there is no requested scope to report). Byte-identical to `info`'s `missing-marketplace-not-added-absent-from-both` state. Severity `error`; no reload-hint.
 
 <!-- catalog-state: missing-marketplace-not-added-absent-from-both -->
 
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp (failed) {not added}
+⊘ ghost-mp (failed) {marketplace not added}
 ```
 
 ______________________________________________________________________
@@ -1488,7 +1559,7 @@ ______________________________________________________________________
 
 Read-only detail surface. Renders the marketplace header at column 0 carrying the `<autoupdate>` or `<no autoupdate>` marker, followed by per-attribute lines (`github:`, `url:`, or `path:`; optional `last_updated:` for git-backed sources github + url per D-76-10; optional `description:` when `marketplace.json` carries one). INFO-01 + INFO-03 + INFO-04 + INFO-07 + MURL-05 lock the full state set below.
 
-Severity routing: every success state is `info` (no second arg to `ctx.ui.notify`); the two `{not added}` failure states and the `{invalid manifest}` manifest-failure state route to `error`. No reload-hint fires on any state (info surfaces are read-only per SNM-33).
+Severity routing: every success state is `info` (no second arg to `ctx.ui.notify`); the two `{marketplace not added}` failure states and the `{invalid manifest}` manifest-failure state route to `error`. No reload-hint fires on any state (info surfaces are read-only per SNM-33).
 
 ### Success -- github source with all optional fields
 
@@ -1591,17 +1662,17 @@ A plugin operation has failed.
 
 ### Failure -- absent from both scopes
 
-Triggered when `marketplace info <name>` (no `--scope` filter) is invoked against a marketplace name that is NOT present in EITHER scope. The orchestrator emits the standalone `MarketplaceNotAddedMessage` variant (`kind: "marketplace-not-added"`) with `scope` OMITTED (because the marketplace is in neither scope -- emitting a `[user]` or `[project]` bracket would be misleading). The renderer's bracket short-circuit suppresses the `[scope]` token, leaving the bare `⊘ <name> (failed) {not added}` row at column 0. Distinct from `scope-mismatch-not-added` below: this state has NO scope bracket because the marketplace is in neither scope; the scope-mismatch state DOES have a bracket because the user asked for a specific scope. Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare detail row as its own block (GRAM-01 / GRAM-02). Severity `error`; no reload-hint.
+Triggered when `marketplace info <name>` (no `--scope` filter) is invoked against a marketplace name that is NOT present in EITHER scope. The orchestrator emits the standalone `MarketplaceNotAddedMessage` variant (`kind: "marketplace-not-added"`) with `scope` OMITTED (because the marketplace is in neither scope -- emitting a `[user]` or `[project]` bracket would be misleading). The renderer's bracket short-circuit suppresses the `[scope]` token, leaving the bare `⊘ <name> (failed) {marketplace not added}` row at column 0. Distinct from `scope-mismatch-not-added` below: this state has NO scope bracket because the marketplace is in neither scope; the scope-mismatch state DOES have a bracket because the user asked for a specific scope. Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare detail row as its own block (GRAM-01 / GRAM-02). Severity `error`; no reload-hint.
 
 <!-- catalog-state: absent-from-both -->
 
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp (failed) {not added}
+⊘ ghost-mp (failed) {marketplace not added}
 ```
 
-### Failure -- `--scope` mismatch (`{not added}`)
+### Failure -- `--scope` mismatch (`{marketplace not added}`)
 
 Surfaced when `marketplace info <name> --scope <wrong-scope>` is invoked against a marketplace present only in the OTHER scope (e.g., requesting `--scope user` when `my-mp` lives only in `project`). The standalone `MarketplaceNotAddedMessage` variant (`kind: "marketplace-not-added"`) distinguishes this from a truly-absent marketplace name and uniquely identifies the scope-mismatch surface. The renderer emits a bare row at column 0 (no marketplace header above it -- the marketplace IS the thing that is not added in the requested scope). The `[user]` bracket is present because the user explicitly asked for a specific scope; the `absent-from-both` state above omits the bracket to avoid misleading the user when the marketplace is in NEITHER scope. Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare detail row as its own block (GRAM-01 / GRAM-02). Severity `error`; no reload-hint (info surfaces are read-only per SNM-33).
 
@@ -1610,7 +1681,7 @@ Surfaced when `marketplace info <name> --scope <wrong-scope>` is invoked against
 ```text
 A marketplace operation has failed.
 
-⊘ my-mp [user] (failed) {not added}
+⊘ my-mp [user] (failed) {marketplace not added}
 ```
 
 ______________________________________________________________________
@@ -1619,7 +1690,7 @@ ______________________________________________________________________
 
 Read-only detail surface (Phase 44). Renders the install-cascade always-marketplace-header form (mirrors `install`'s shape per INFO-02) with a per-plugin row at 2-space indent, optional description block hard-wrapped at col 4 / 66-col text width, then either per-kind component lists (sorted: `agents`, `commands`, `mcp`, `skills`) with an optional `dependencies:` line LAST, OR the `components: not resolved` marker (INFO-05). Phase 44 / INFO-02 + INFO-05 + INFO-07 lock the full state set below.
 
-Severity routing: every success state (installed / available / unavailable / installed-both-scopes / state-only-installed-both-scopes / components-not-resolved / state-only-installed / state-only-partially-installed / state-only-disabled-with-components) is `info` severity (no second arg to `ctx.ui.notify`); the `state-only-fetch-skipped` and `disabled-fetch-skipped` notes are the two `warning` states on this surface (the user asked for a fetch and the command did not do it); the three `(failed)` states (`{not added}` missing-marketplace, `{not added}` --scope mismatch, `{not in manifest}` missing-plugin with NO installation record) route to `error`. No reload-hint fires on any state (info surfaces are read-only per SNM-33).
+Severity routing: every success state (installed / available / unavailable / installed-both-scopes / state-only-installed-both-scopes / components-not-resolved / state-only-installed / state-only-partially-installed / state-only-disabled-with-components) is `info` severity (no second arg to `ctx.ui.notify`); the `state-only-fetch-skipped` and `disabled-fetch-skipped` notes are the two `warning` states on this surface (the user asked for a fetch and the command did not do it); the three `(failed)` states (`{marketplace not added}` missing-marketplace, `{marketplace not added}` --scope mismatch, `{not in manifest}` missing-plugin with NO installation record) route to `error`. No reload-hint fires on any state (info surfaces are read-only per SNM-33).
 
 ### Success -- installed single scope
 
@@ -1905,7 +1976,7 @@ Triggered when `plugin info <plugin>@<marketplace>` is invoked against a marketp
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp (failed) {not added}
+⊘ ghost-mp (failed) {marketplace not added}
 ```
 
 ### Failure -- missing marketplace (`--scope` mismatch)
@@ -1917,7 +1988,7 @@ Triggered when `plugin info <plugin>@<marketplace> --scope <wrong-scope>` is inv
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp [user] (failed) {not added}
+⊘ ghost-mp [user] (failed) {marketplace not added}
 ```
 
 ______________________________________________________________________
@@ -2202,14 +2273,14 @@ The v1.0 free-text retry-anchor trailer (a sentence above the reload-hint instru
 
 ### Failure -- missing marketplace (explicit `--scope`)
 
-Triggered when `marketplace remove <name> --scope <scope>` targets a name that is NOT present in the requested scope (ATTR-06 / S3). The orchestrator's pre-guard existence check routes the miss to the standalone `MarketplaceNotAddedMessage` `{not added}` variant (`kind: "marketplace-not-added"`, `name`, `scope`) and returns BEFORE entering `withStateGuard` -- no raw `MarketplaceNotFoundError` escapes past the orchestrator (D-48-C Shape 1), and state is left untouched. The variant carries the requested `[scope]` bracket (SCOPE-01). Routed via `isInfoKind` -> `error` severity, no reload-hint. Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare detail row as its own block (GRAM-01 / GRAM-02).
+Triggered when `marketplace remove <name> --scope <scope>` targets a name that is NOT present in the requested scope (ATTR-06 / S3). The orchestrator's pre-guard existence check routes the miss to the standalone `MarketplaceNotAddedMessage` `{marketplace not added}` variant (`kind: "marketplace-not-added"`, `name`, `scope`) and returns BEFORE entering `withStateGuard` -- no raw `MarketplaceNotFoundError` escapes past the orchestrator (D-48-C Shape 1), and state is left untouched. The variant carries the requested `[scope]` bracket (SCOPE-01). Routed via `isInfoKind` -> `error` severity, no reload-hint. Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare detail row as its own block (GRAM-01 / GRAM-02).
 
 <!-- catalog-state: remove-missing-not-added -->
 
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp [user] (failed) {not added}
+⊘ ghost-mp [user] (failed) {marketplace not added}
 ```
 
 ### Failure -- missing marketplace (bare form, absent from both scopes)
@@ -2221,7 +2292,7 @@ Triggered when `marketplace remove <name>` (no `--scope`) targets a name absent 
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp (failed) {not added}
+⊘ ghost-mp (failed) {marketplace not added}
 ```
 
 ______________________________________________________________________
@@ -2363,19 +2434,19 @@ Triggered when `marketplace update <name> --scope <scope>` names a marketplace t
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp [project] (failed) {not added}
+⊘ ghost-mp [project] (failed) {marketplace not added}
 ```
 
 ### Failure -- marketplace not added, bare form absent from both scopes (SC#1 / ATTR-06)
 
-Triggered when the bare `marketplace update <name>` form (no `--scope`) names a marketplace that is absent in BOTH scopes. `resolveScopeFromState` throws `MarketplaceNotFoundError`; the pre-guard catches it and emits the same standalone `{not added}` variant, but with NO `[scope]` bracket (the absent-from-both form: there is no requested scope to report). Byte-identical to `info`'s `missing-marketplace-not-added-absent-from-both` state and to the corresponding `reinstall` / `update` rows -- the cross-op byte convergence SC#1 proves. Severity `error`; no reload-hint.
+Triggered when the bare `marketplace update <name>` form (no `--scope`) names a marketplace that is absent in BOTH scopes. `resolveScopeFromState` throws `MarketplaceNotFoundError`; the pre-guard catches it and emits the same standalone `{marketplace not added}` variant, but with NO `[scope]` bracket (the absent-from-both form: there is no requested scope to report). Byte-identical to `info`'s `missing-marketplace-not-added-absent-from-both` state and to the corresponding `reinstall` / `update` rows -- the cross-op byte convergence SC#1 proves. Severity `error`; no reload-hint.
 
 <!-- catalog-state: update-missing-not-added-absent-from-both -->
 
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp (failed) {not added}
+⊘ ghost-mp (failed) {marketplace not added}
 ```
 
 ______________________________________________________________________
@@ -2497,13 +2568,26 @@ The enable branch derives its ledger gate from the PERSISTED record (ENBL-07 / D
 <!-- catalog-state: enable-not-installed -->
 
 ```text
-A plugin operation needs attention.
+A plugin operation has failed.
 
 ● claude-plugins-official [user]
   ⊘ foo-plugin (skipped) {not installed}
 ```
 
-Triggered when the marketplace container is recorded in the target scope but the plugin row is absent from state.json (never installed, or concurrently uninstalled). Mirrors the reinstall/update precedent: `{not in manifest}` is reserved for "plugin absent from a PRESENT manifest"; "marketplace present, plugin not installed" is the actionable `(skipped) {not installed}` skip (ATTR-08 taxonomy). `not installed` is NOT in the benign closed set, so the skip routes to `warning` severity with the `A plugin operation needs attention.` summary (D-28-03). No reload-hint. The same arm fires for `disable` (the orchestrator's not-recorded outcome is shared by both verbs).
+Triggered when the marketplace container is recorded in the target scope but the plugin row is absent from state.json (never installed, or concurrently uninstalled). Mirrors the reinstall/update precedent: `{not in manifest}` is reserved for "plugin absent from a PRESENT manifest"; "marketplace present, plugin not installed" is the actionable `(skipped) {not installed}` skip (ATTR-08 taxonomy). D-01: nothing was enabled or disabled, so the operation was NOT carried out and the row stamps `error` with the `A plugin operation has failed.` summary -- the same stamp `uninstall`'s already-gone row, `update`'s cascade skip, and `reinstall`'s in-scope skipped arm apply to the identical `{not installed}` reason set. `(skipped)` remains the status token; severity is the separate tri-state axis. No reload-hint. The same arm fires for `disable` (the orchestrator's not-recorded outcome is shared by both verbs).
+
+### Not installed -- marketplace one scope over (SCOPE-01)
+
+<!-- catalog-state: enable-not-installed-cross-scope -->
+
+```text
+A plugin operation has failed.
+
+● claude-plugins-official [project]
+  ⊘ foo-plugin (skipped) {not installed, marketplace in user scope}
+```
+
+Triggered when `enable`/`disable` names an explicit `--scope` whose state.json holds no such marketplace container, while the OTHER scope does. Nothing of that marketplace is installed at the scope the operator named, so the PLUGIN is the row's subject (a marketplace absent from BOTH scopes keeps the `enable-marketplace-not-added` row instead). The brace then carries TWO facts, because the two absent-target misses take two different remedies: `{not installed}` alone (the `enable-not-installed` state above) means the container is right here and the fix is to install the plugin; the joined `{not installed, marketplace in user scope}` means the container is one scope over, so the fix is to target that scope or add the marketplace at the one named. `marketplace in user scope` is a CONTENT reason -- its subject is the plugin row it rides, not the marketplace -- which is why it JOINS `not installed` rather than replacing it, unlike the three structural `marketplace not added*` markers. The scope word names where the container IS, so it is always the OPPOSITE of the row's `[scope]` bracket. Severity `error`; no reload-hint.
 
 ### Marketplace not added (ENBL / SCOPE-01)
 
@@ -2512,10 +2596,10 @@ Triggered when the marketplace container is recorded in the target scope but the
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp [user] (failed) {not added}
+⊘ ghost-mp [user] (failed) {marketplace not added}
 ```
 
-Triggered when the requested marketplace is not added in the resolved scope (or is present only in the OTHER scope). Routes through the standalone `MarketplaceNotAddedMessage` variant (`{not added}` on the marketplace subject) -- same pattern as install/uninstall (ATTR-01..04). Severity `error`; no reload-hint.
+Triggered when the requested marketplace is not added in EITHER scope. Routes through the standalone `MarketplaceNotAddedMessage` variant (`{marketplace not added}` on the marketplace subject) -- same pattern as install (ATTR-01..04). SCOPE-01: a marketplace present only in the OTHER scope does NOT reach this state; nothing is installed at the requested scope, so the row's subject is the PLUGIN and it renders the `enable-not-installed` state. Severity `error`; no reload-hint.
 
 ### Invalid config (CFG-03)
 
@@ -2567,7 +2651,7 @@ Idempotent no-op -- the plugin is already disabled (the state record carries `en
 ```text
 A marketplace operation has failed.
 
-⊘ ghost-mp [user] (failed) {not added}
+⊘ ghost-mp [user] (failed) {marketplace not added}
 ```
 
 Triggered when the requested marketplace is not added in the resolved scope (or is present only in the OTHER scope). Routes through the standalone `MarketplaceNotAddedMessage` variant. Severity `error`; no reload-hint.
@@ -2589,7 +2673,7 @@ ______________________________________________________________________
 
 ## `/claude:plugin marketplace autoupdate|noautoupdate <name>`
 
-Marketplace-only flag flip. The orchestrator emits a single marketplace block with no plugin children; the block's `mp.status` discriminates between the V2 outcomes. V2 distinguishes six user-visible states for this surface: fresh-flip enable, fresh-flip disable, idempotent enable (no-op), idempotent disable (no-op), and -- when the marketplace persistence record cannot be found -- the standalone `{not added}` failure in two forms (explicit `--scope` carrying the scope bracket, and the bare absent-from-both form; ATTR-05 / D-48-C Shape 1). The per-state catalog blocks below give the exact byte form for each outcome. UXG-04: the flip surface now renders the autoupdate state as the `<autoupdate>` / `<no autoupdate>` marker (byte-form parity with the list surface), reversing the Phase 17.1 / D-18-05 status-token design; fresh flips render the bare marker, idempotent no-ops render the marker plus an `{already autoupdate}` / `{already no autoupdate}` idempotence brace. This shares byte form with the list-surface markers documented under [`## /claude:plugin marketplace list`](#claudeplugin-marketplace-list), but the two surfaces differ: the **list** surface conveys autoupdate-off by marker _absence_ (it emits `<autoupdate>` iff `mp.details.autoupdate === true`, with no off-marker), whereas this **flip** surface emits the explicit `<no autoupdate>` off-marker. The `<no autoupdate>` off-marker is therefore emitted only on this flip surface, never on the list surface (UXG-04 does not change the list surface).
+Marketplace-only flag flip. The orchestrator emits a single marketplace block with no plugin children; the block's `mp.status` discriminates between the V2 outcomes. V2 distinguishes six user-visible states for this surface: fresh-flip enable, fresh-flip disable, idempotent enable (no-op), idempotent disable (no-op), and -- when the marketplace persistence record cannot be found -- the standalone `{marketplace not added}` failure in two forms (explicit `--scope` carrying the scope bracket, and the bare absent-from-both form; ATTR-05 / D-48-C Shape 1). The per-state catalog blocks below give the exact byte form for each outcome. UXG-04: the flip surface now renders the autoupdate state as the `<autoupdate>` / `<no autoupdate>` marker (byte-form parity with the list surface), reversing the Phase 17.1 / D-18-05 status-token design; fresh flips render the bare marker, idempotent no-ops render the marker plus an `{already autoupdate}` / `{already no autoupdate}` idempotence brace. This shares byte form with the list-surface markers documented under [`## /claude:plugin marketplace list`](#claudeplugin-marketplace-list), but the two surfaces differ: the **list** surface conveys autoupdate-off by marker _absence_ (it emits `<autoupdate>` iff `mp.details.autoupdate === true`, with no off-marker), whereas this **flip** surface emits the explicit `<no autoupdate>` off-marker. The `<no autoupdate>` off-marker is therefore emitted only on this flip surface, never on the list surface (UXG-04 does not change the list surface).
 
 ### Fresh enable
 
@@ -2633,29 +2717,29 @@ Idempotent no-op -- the flag was already in the requested state. `mp.status` = `
 
 ### Failure -- missing marketplace (explicit `--scope`)
 
-Triggered when `marketplace autoupdate <name> --scope <scope>` (or `noautoupdate`) targets a name NOT added in the requested scope (ATTR-05 / S1). The explicit-scope `MarketplaceNotFoundError` raised by `applyAutoupdateFlipInPlace` is a missing-marketplace precondition, NOT a flip failure -- the orchestrator routes it to the standalone `MarketplaceNotAddedMessage` `{not added}` variant (`kind: "marketplace-not-added"`, `name`, `scope`) carrying the requested `[scope]` bracket (D-48-C Shape 1). This supersedes the former reason-less / synthetic-child `{not found}` byte form: the reason is now the truthful `{not added}`. Routed via `isInfoKind` -> `error` severity, no reload-hint. Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare detail row as its own block (GRAM-01 / GRAM-02). A `StateLockHeldError` is NOT a missing-marketplace and keeps its separate synthetic-child `(failed) {lock held}` routing (unchanged by ATTR-05).
+Triggered when `marketplace autoupdate <name> --scope <scope>` (or `noautoupdate`) targets a name NOT added in the requested scope (ATTR-05 / S1). The explicit-scope `MarketplaceNotFoundError` raised by `applyAutoupdateFlipInPlace` is a missing-marketplace precondition, NOT a flip failure -- the orchestrator routes it to the standalone `MarketplaceNotAddedMessage` `{marketplace not added}` variant (`kind: "marketplace-not-added"`, `name`, `scope`) carrying the requested `[scope]` bracket (D-48-C Shape 1). This supersedes the former reason-less / synthetic-child `{not found}` byte form: the reason is now the truthful `{marketplace not added}`. Routed via `isInfoKind` -> `error` severity, no reload-hint. Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare detail row as its own block (GRAM-01 / GRAM-02). A `StateLockHeldError` is NOT a missing-marketplace and keeps its separate synthetic-child `(failed) {lock held}` routing (unchanged by ATTR-05).
 
 <!-- catalog-state: autoupdate-missing-not-added -->
 
 ```text
 A marketplace operation has failed.
 
-⊘ missing-mp [user] (failed) {not added}
+⊘ missing-mp [user] (failed) {marketplace not added}
 ```
 
 ### Failure -- missing marketplace (bare form, absent from both scopes)
 
-Triggered when `marketplace autoupdate <name>` (no `--scope`) targets a name absent from EVERY iterated scope (ATTR-05 / S2). The former byte form was a reason-LESS bare `(failed)` row; it is superseded by the SAME standalone `MarketplaceNotAddedMessage` `{not added}` variant. The bare form carries `first.scope` -- the scope where the first not-found was observed; SC-6 iterates project-before-user, so the bracket is `[project]`. Severity `error`; no reload-hint. Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare detail row as its own block (GRAM-01 / GRAM-02).
+Triggered when `marketplace autoupdate <name>` (no `--scope`) targets a name absent from EVERY iterated scope (ATTR-05 / S2). The former byte form was a reason-LESS bare `(failed)` row; it is superseded by the SAME standalone `MarketplaceNotAddedMessage` `{marketplace not added}` variant. The bare form carries `first.scope` -- the scope where the first not-found was observed; SC-6 iterates project-before-user, so the bracket is `[project]`. Severity `error`; no reload-hint. Two-block form: the `A marketplace operation has failed.` summary on the host `Error:` label line, then the bare detail row as its own block (GRAM-01 / GRAM-02).
 
 <!-- catalog-state: autoupdate-missing-not-added-bare -->
 
 ```text
 A marketplace operation has failed.
 
-⊘ missing-mp [project] (failed) {not added}
+⊘ missing-mp [project] (failed) {marketplace not added}
 ```
 
-The blocks above span two ladders. The severity ladder runs fresh → info, benign skipped → info, failed (and the `{not added}` precondition miss) → error (per D-16-11 + Phase 17.1's mp-level skipped extension, refined by UXG-02 / D-28-06: the two idempotent autoupdate no-ops carry benign reasons -- `already autoupdate` / `already no autoupdate` -- so they compute info, not warning; an mp-level `skipped` with non-benign or missing reasons would still route to warning). The reload-hint ladder is uniform here: every autoupdate flag flip suppresses the trailer (per SNM-33 / D-22-01 / D-22-03). The autoupdate flag lives on a marketplace record, not on any Pi-visible resource, so neither a fresh flip nor an idempotent no-op nor a missing-marketplace `{not added}` failure contributes to "/reload to pick up changes" -- only a plugin row state change does.
+The blocks above span two ladders. The severity ladder runs fresh → info, benign skipped → info, failed (and the `{marketplace not added}` precondition miss) → error (per D-16-11 + Phase 17.1's mp-level skipped extension, refined by UXG-02 / D-28-06: the two idempotent autoupdate no-ops carry benign reasons -- `already autoupdate` / `already no autoupdate` -- so they compute info, not warning; an mp-level `skipped` with non-benign or missing reasons would still route to warning). The reload-hint ladder is uniform here: every autoupdate flag flip suppresses the trailer (per SNM-33 / D-22-01 / D-22-03). The autoupdate flag lives on a marketplace record, not on any Pi-visible resource, so neither a fresh flip nor an idempotent no-op nor a missing-marketplace `{marketplace not added}` failure contributes to "/reload to pick up changes" -- only a plugin row state change does.
 
 ______________________________________________________________________
 

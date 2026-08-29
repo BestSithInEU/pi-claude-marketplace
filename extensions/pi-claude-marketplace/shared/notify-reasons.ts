@@ -4,14 +4,14 @@ import type { SoftDepStatus } from "../platform/pi-api.ts";
 /**
  * shared/notify-reasons.ts -- the topic-grouped organization of the closed
  * reasons set (D-09). The byte-critical runtime tuple `REASONS` stays declared
- * in `notify.ts` as the SINGLE source of catalog truth (OUT-08: the 39-entry
+ * in `notify.ts` as the SINGLE source of catalog truth (OUT-08: the 43-entry
  * membership AND order must stay byte-identical for catalog stability); this
  * module reorganizes that closed set into shared topic-grouped enums + a
  * structural completeness proof WITHOUT recomposing the `REASONS` tuple (which
  * would risk reordering). The topic groups below are typed views over the same
  * closed `Reason` literals, so a command module can reference an
  * intent-meaningful group (e.g. the failure-class reasons) instead of the flat
- * 39-entry set.
+ * 43-entry set.
  *
  * D-90-05 is what moved the count from 37 to 38: `"unsupported component"`
  * joined the set as the truthful marker for a dropped component kind that has
@@ -29,7 +29,7 @@ import type { SoftDepStatus } from "../platform/pi-api.ts";
  * tuples. Membership of every literal is checked at compile time against the
  * closed `Reason` set (each group's element type extends `Reason`), and the
  * `_ReasonsCoverageProof` at the bottom asserts the union of all groups + the
- * command-private reasons + the structural `"not added"` marker is EXACTLY the
+ * command-private reasons + the structural `"marketplace not added"` marker is EXACTLY the
  * closed set -- a literal added to `REASONS` without a home here, or a typo,
  * becomes a compile error.
  */
@@ -220,7 +220,7 @@ export function malformedReasonsForKinds(
  * `marketplace add`, `not found` / `not installed` for `uninstall`,
  * `plugins remain` for `marketplace remove`, `orphan rewake` for `install`)
  * are NOT declared here -- they belong to the owning command's module. The
- * structural `"not added"` marketplace-absent marker is likewise not a shared
+ * structural `"marketplace not added"` marketplace-absent marker is likewise not a shared
  * topic reason (it is excluded from `ContentReason` in `notify.ts`).
  */
 type SharedTopicReason = IdempotentReason | UnsupportedReason | FailureReason | DeclaredStateReason;
@@ -228,17 +228,27 @@ type SharedTopicReason = IdempotentReason | UnsupportedReason | FailureReason | 
 /**
  * D-09: the command-private reasons, named here ONLY for the completeness
  * proof below -- they are owned by their command modules, not exported as a
- * shared group. `"not added"` is the structural marketplace-absent marker
- * (excluded from `ContentReason` in `notify.ts`); it is included here solely so
- * the coverage proof sees the full closed set.
+ * shared group. `"marketplace not added"` and its two scope-qualified siblings are the three
+ * structural marketplace-absent markers (all excluded from `ContentReason` in
+ * `notify.ts`); they are included here solely so the coverage proof sees the
+ * full closed set.
  */
 type CommandPrivateReason =
   | "not found"
   | "not installed"
+  // SCOPE-01 / D-01: the cross-scope qualifier the lifecycle verbs join to
+  // `not installed` on an absent-target row. Owned by those verbs' own
+  // absent-target composer alongside `not installed`, so it is named here for
+  // the proof rather than promoted to a shared topic group. Unlike the three
+  // structural markers below it, this pair IS a `ContentReason`.
+  | "marketplace in user scope"
+  | "marketplace in project scope"
   | "plugins remain"
   | "stale clone"
   | "duplicate name"
-  | "not added"
+  | "marketplace not added"
+  | "marketplace not added to user scope"
+  | "marketplace not added to project scope"
   | "orphan rewake";
 
 /**
