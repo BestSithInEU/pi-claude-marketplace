@@ -41,6 +41,7 @@ const UNSUPPORTED_COMPONENT_FIELDS = {
   userConfig: Type.Optional(Type.Unknown()),
   bin: Type.Optional(Type.Unknown()),
   settings: Type.Optional(Type.Unknown()),
+  workflows: Type.Optional(Type.Unknown()),
 };
 
 // MCPR-01 / MCPR-02: mcpServers may be a relative (to pluginRoot) string
