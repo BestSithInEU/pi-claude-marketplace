@@ -901,6 +901,29 @@ const FIXTURES: FixtureMap = {
       },
     },
 
+    // WDET-04: a workflow-bearing plugin uses the existing partial inventory
+    // grammar. The typed reason has info severity and adds no hint or reload
+    // trailer before installation.
+    "workflow-partially-available-inventory": {
+      pi: piWithBothLoaded(),
+      message: {
+        marketplaces: [
+          {
+            name: "official",
+            scope: "user",
+            plugins: [
+              {
+                status: "partially-available",
+                name: "helper",
+                version: "1.0.0",
+                reasons: ["workflows"],
+              },
+            ],
+          },
+        ],
+      },
+    },
+
     // FSTAT-02 / D-66-03: list-surface inventory row for a recorded-installed
     // plugin currently re-resolving `partially-available`. The derived `partially-installed`
     // token wears the dedicated `◉` glyph, distinct from the clean `●`
@@ -1183,6 +1206,31 @@ const FIXTURES: FixtureMap = {
       },
     },
 
+    // WDET-04: explicit partial consent installs the supported components and
+    // reports the dropped workflow kind through the existing success grammar.
+    "workflow-partial-install-success": {
+      pi: piWithBothLoaded(),
+      message: {
+        marketplaces: [
+          {
+            name: "official",
+            scope: "user",
+            plugins: [
+              {
+                status: "partially-installed",
+                severity: "info",
+                needsReload: true,
+                name: "helper",
+                version: "1.0.0",
+                dependencies: [],
+                reasons: ["workflows"],
+              },
+            ],
+          },
+        ],
+      },
+    },
+
     // DFEN-04 / OUT-01 / OUT-04: the install ran whole and then unstaged
     // because the plugin's own `defaultEnabled` said so. The `◍` row names the
     // author-declared cause and carries the frozen enable-hint trailer; no
@@ -1254,6 +1302,31 @@ const FIXTURES: FixtureMap = {
                 status: "partially-available",
                 name: "helper",
                 reasons: ["unsupported hooks", "lsp"],
+                partialHint: true,
+                severity: "error",
+              },
+            ],
+          },
+        ],
+      },
+    },
+
+    // WDET-04: a normal install rejects a workflow-bearing plugin through the
+    // existing partially-available error row and partial-install hint.
+    "workflow-install-rejection": {
+      pi: piWithBothLoaded(),
+      expectedSeverity: "error",
+      message: {
+        marketplaces: [
+          {
+            name: "official",
+            scope: "user",
+            plugins: [
+              {
+                status: "partially-available",
+                name: "helper",
+                version: "1.0.0",
+                reasons: ["workflows"],
                 partialHint: true,
                 severity: "error",
               },
@@ -5024,14 +5097,14 @@ test("catalog UAT: every <!-- catalog-state: --> annotation pairs byte-equal wit
   const catalog = await readFile(CATALOG_PATH, "utf8");
   const examples = loadCatalogExamples(catalog);
 
-  // Exact count, not a floor: 173 is the number of annotated examples in
+  // Exact count, not a floor: 176 is the number of annotated examples in
   // docs/output-catalog.md, and it is what stops a `loadCatalogExamples`
   // refactor from silently parsing a fraction of the corpus. Update it
   // deliberately when catalog examples are added or removed.
   assert.equal(
     examples.length,
-    173,
-    `Expected exactly 173 annotated catalog examples; found ${examples.length}. Check that the discriminator comments in docs/output-catalog.md were not lost, and update this count when examples are added.`,
+    176,
+    `Expected exactly 176 annotated catalog examples; found ${examples.length}. Check that the discriminator comments in docs/output-catalog.md were not lost, and update this count when examples are added.`,
   );
 
   const failures: Failure[] = [];

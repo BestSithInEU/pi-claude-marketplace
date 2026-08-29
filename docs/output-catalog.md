@@ -60,7 +60,7 @@ This 0 / 2 / 4 / 6 ladder is the byte-exact contract `notify()` emits at the `ct
 
 ### Reasons rendering
 
-Reasons render inside a single `{}` block, comma-space separated. Each reason is 1-3 words lowercase, hyphenated where natural (`{up-to-date}`, `{rollback partial}`, `{not in manifest}`). Manifest field names render verbatim as the sole carve-out (`{lsp}`). HOOK-04 / D-58-02: `{unsupported hooks}` is a normal 2-word reason (no longer a manifest-field carve-out -- under v1.13 the `hooks` component kind is supported, and the reason is sourced through `shared/probe-classifiers.ts::narrowResolverNotes` against `parseHooksConfig` prefix tokens). The closed-set membership is defined by the 38-member `extensions/pi-claude-marketplace/shared/notify.ts::REASONS` tuple.
+Reasons render inside a single `{}` block, comma-space separated. Each reason is 1-3 words lowercase, hyphenated where natural (`{up-to-date}`, `{rollback partial}`, `{not in manifest}`). Manifest field names render verbatim as the sole carve-out (`{lsp}`). HOOK-04 / D-58-02: `{unsupported hooks}` is a normal 2-word reason (no longer a manifest-field carve-out -- under v1.13 the `hooks` component kind is supported, and the reason is sourced through `shared/probe-classifiers.ts::narrowResolverNotes` against `parseHooksConfig` prefix tokens). The 40-member `extensions/pi-claude-marketplace/shared/notify.ts::REASONS` tuple defines the closed set. The typed `workflows` kind has the dedicated `{workflows}` reason.
 
 Multi-reason emit order is contractual. `composeReasons` joins in ARRAY order, so the order the orchestrator writes into `reasons[]` is the order the brace shows, and the soft-dependency markers append AFTER every typed reason (MSG-GR-4). The orchestrators write the record's relationship to its marketplace first and the facts about the install itself after it, which is why an absent-and-degraded row reads `{not in manifest, lsp}` and never the reverse (INV-02). The DECLARED order of the `REASONS` tuple must also stay byte-stable: the fenced blocks below are byte contracts, so reordering the tuple would move the rendered bytes of every multi-reason row even though no member changed.
 
@@ -426,6 +426,19 @@ The same not-yet-materialized git-source plugin as the `remote-inventory` row ab
 
 A recorded-installed plugin that currently re-resolves `partially-available` (installed with one or more components dropped) is DERIVED as `partially-installed` -- no persisted flag, no migration (FSTAT-01 / D-66-01). The row uses the dedicated `◉` glyph (`ICON_PARTIALLY_INSTALLED`), DISTINCT from the clean `(installed)` row's `●` so the degraded install is visually separable (FSTAT-02). The reasons brace carries the degradation detail, composed exactly like the `upgradable` row. Severity `info`; no reload-hint (inventory row). Once a fully-supported upgrade rewrites the recorded resolution the same deriver yields `(installed)` with no lingering state (FSTAT-03).
 
+### Workflow partially-available inventory row (WDET-04)
+
+<!-- catalog-state: workflow-partially-available-inventory -->
+
+```text
+● official [user]
+  ⊖ helper v1.0.0 (partially-available) {workflows}
+```
+
+A workflow-bearing plugin uses the existing partial status before installation. The row has info severity and no hint or reload trailer.
+
+This state adds no workflow-specific glyph, heading, or wrapping rule.
+
 ### Partially-installed inventory row -- partial-hook plugin (FSTAT-02 / PHOOK-04 / PHOOK-05 / D-71-04)
 
 <!-- catalog-state: partially-installed-inventory-hooks -->
@@ -547,6 +560,19 @@ A plugin operation needs attention.
 
 A `--partial` install that succeeds with one or more components dropped (the resolver's `partially-available` arm) renders the `(partially-installed)` row with the dedicated `◉` glyph. The partially-available arm still stages the SUPPORTED components, so a `(partially-installed)` success row carries `dependencies` exactly like a clean `(installed)` row (WR-03). With the `agents` companion extension unloaded the soft-dep marker fires inside the SAME brace as the dropped-component reason -- `composeReasons` appends the `{requires pi-...}` markers AFTER the typed `reasons[]` (MSG-GR-4), so the dropped-component token leads: `{lsp, requires pi-subagents}`. partially-installed is a realized transition, so the reload-hint fires (the caller stamps `needsReload: true`). SEV-01: the unloaded `agents` companion is a silent degradation independent of the dropped components, so the success row stamps `warning` and the cascade carries the `needs attention` summary line (the per-row bytes are unchanged from the info partially-installed form). The direct `--partial` opt-in itself stays benign info -- the warning here is the missing companion, not the partial install.
 
+### Workflow partial-install success (WDET-04)
+
+<!-- catalog-state: workflow-partial-install-success -->
+
+```text
+● official [user]
+  ◉ helper v1.0.0 (partially-installed) {workflows}
+
+/reload to pick up changes
+```
+
+Explicit partial consent installs the supported components. The existing reload trailer appears because the command changed the installed resources.
+
 ### Install that lands disabled (DFEN-04 / OUT-01 / OUT-04)
 
 <!-- catalog-state: install-disabled -->
@@ -586,6 +612,20 @@ A plugin operation has failed.
 ```
 
 The manifest declares Claude features Pi doesn't support, but the plugin is otherwise structurally sound, so the resolver verdict is the partially-available arm (SEV-02 / D-69-03 / XSURF-01). The install-failure surface renders the resolver-state-driven `(partially-available)` token with the dedicated `⊖` glyph -- consistent with how `list` / `info` describe the same plugin -- not the `⊘ (unavailable)` token reserved for structural defects. The `partially-available` variant has no `scope` field (SNM-11) so the plugin row carries no bracket; reasons name the offending fields verbatim. Because `--partial` can degrade-install the supported components, the row carries a 4-space-indented `--partial` hint trailer pointing the user at the flag, and the install renders at `error` severity (so the leading summary line fires). No `cause:` trailer -- the reason carries the explanation. No reload-hint (nothing landed). The hint references the user's own flag only, with no plugin/marketplace interpolation (T-69-01); the byte-exact wording is FROZEN as the DOC contract (D-70-01) and locked in `docs/messaging-style-guide.md`.
+
+### Workflow install rejection (WDET-04)
+
+<!-- catalog-state: workflow-install-rejection -->
+
+```text
+A plugin operation has failed.
+
+● official [user]
+  ⊖ helper v1.0.0 (partially-available) {workflows}
+    Re-run with --partial to install the supported components.
+```
+
+A normal install rejects the workflow-bearing plugin. It uses the existing error summary and partial-install hint, with no reload trailer.
 
 ### Failure -- structurally unavailable (`--partial` cannot help)
 
