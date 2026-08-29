@@ -56,3 +56,13 @@ knowledge base itself. The marker keeps it out of the open-session count.
 - **Why not caught:** No local gate enforces Sonar `typescript:S3863`. The PR analysis found the duplicate imports.
 - **Recurrence guard:** Sonar `typescript:S3863` finds duplicate imports. This entry records the pattern for future Phase-0 recall.
 ---
+
+## marketplace-add-http-errors — marketplace add exposes raw HTTP clone errors
+- **Date:** 2026-08-29
+- **Error patterns:** `HTTP Error: 404 Not Found`, raw extension error, missing repository, transient HTTP failure
+- **Root cause:** Marketplace add used a transport-only classifier that did not classify repository absence or transient HTTP status codes.
+- **Fix:** Added an opt-in source-access classifier for marketplace add. It maps 404/410 to source missing and transient statuses to network unreachable.
+- **Files changed:** extensions/pi-claude-marketplace/orchestrators/marketplace/add.ts, extensions/pi-claude-marketplace/shared/git-failure-classifiers.ts, tests/orchestrators/marketplace/add.test.ts, tests/shared/git-failure-classifiers.test.ts
+- **Why not caught:** No marketplace-add test covered non-authentication HTTP clone errors.
+- **Recurrence guard:** D-76-09 tests pin marketplace-add mappings. Shared-classifier tests protect other callers' fallthrough behavior.
+---
