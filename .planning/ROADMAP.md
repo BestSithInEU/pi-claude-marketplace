@@ -1,4 +1,4 @@
-# Roadmap: Workflow Detection
+# workflows-detection — Workflow Detection
 
 **Milestone:** `workflows-detection`
 
