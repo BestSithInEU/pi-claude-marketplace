@@ -41,20 +41,20 @@ The roadmap maps each requirement to one phase.
 
 | Requirement | Phase | Status |
 | ----------- | ----- | ------ |
-| WDET-01 | — | Pending |
-| WDET-02 | — | Pending |
-| WDET-03 | — | Pending |
-| WDET-04 | — | Pending |
-| WDET-05 | — | Pending |
-| WDET-06 | — | Pending |
+| WDET-01 | Phase 106 | Pending |
+| WDET-02 | Phase 106 | Pending |
+| WDET-03 | Phase 106 | Pending |
+| WDET-04 | Phase 106 | Pending |
+| WDET-05 | Phase 106 | Pending |
+| WDET-06 | Phase 106 | Pending |
 
 **Coverage:**
 
 - Milestone requirements: 6 total
-- Mapped to phases: 0
-- Unmapped: 6
+- Mapped to phases: 6
+- Unmapped: 0
 
 ---
 
 _Requirements defined: 2026-08-29_
-_Last updated: 2026-08-29 after initial definition_
+_Last updated: 2026-08-29 after roadmap creation_
