@@ -29,7 +29,7 @@ The six requirements form one resolver-to-install workflow, so standard granular
   4. A normal install rejects an affected plugin. `--partial` installs only its supported components.
   5. After `/reload`, supported artifacts work, but Pi has no materialized workflow files and does not execute workflows.
 
-**Plans**: 3/4 plans executed
+**Plans**: 4/4 plans executed
 
 Plans:
 **Wave 1**
@@ -43,7 +43,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 106-04-PLAN.md - Cross-surface reason parity, byte-level catalog contracts, and full phase gates
+- [x] 106-04-PLAN.md - Cross-surface reason parity, byte-level catalog contracts, and full phase gates
 
 **UI hint**: yes
 
@@ -53,4 +53,4 @@ Plans:
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 106. Workflow Detection and Partial Install | 3/4 | In Progress|  |
+| 106. Workflow Detection and Partial Install | 4/4 | In Progress|  |

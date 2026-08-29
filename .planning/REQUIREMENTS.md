@@ -14,7 +14,7 @@
 
 ### User Surfaces
 
-- [ ] **WDET-04**: Each unsupported-reason surface shows the exact `{workflows}` reason.
+- [x] **WDET-04**: Each unsupported-reason surface shows the exact `{workflows}` reason.
 - [x] **WDET-05**: A normal install rejects the partial plugin. An install with `--partial` installs only its supported components.
 
 ### Scope Boundary
@@ -44,7 +44,7 @@ The roadmap maps each requirement to one phase.
 | WDET-01 | Phase 106 | Complete |
 | WDET-02 | Phase 106 | Complete |
 | WDET-03 | Phase 106 | Complete |
-| WDET-04 | Phase 106 | Pending |
+| WDET-04 | Phase 106 | Complete |
 | WDET-05 | Phase 106 | Complete |
 | WDET-06 | Phase 106 | Complete |
 

@@ -4,17 +4,17 @@ milestone: workflows-detection
 milestone_name: Workflow Detection
 current_phase: 106
 current_phase_name: Workflow Detection and Partial Install
-status: executing
-stopped_at: Completed Wave 2 through 106-03-PLAN.md
-last_updated: "2026-08-29T20:03:54.000Z"
+status: verifying
+stopped_at: Phase 106 execution complete; verification pending
+last_updated: "2026-08-29T20:33:47.279Z"
 last_activity: 2026-08-29
 last_activity_desc: Phase 106 execution started
-state_head: 0b87aff7c806188ad5bbe6721aa03d94dc91a38a
+state_head: 588ed76b4ac7f2f4e8e5411f53032ce7657944e2
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 4
-  completed_plans: 3
+  completed_plans: 4
   percent: 0
 ---
 
@@ -31,7 +31,7 @@ See: `.planning/PROJECT.md` (updated 2026-08-29)
 
 Phase: 106 (Workflow Detection and Partial Install) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-08-29 — Phase 106 execution started
 
 Progress: [░░░░░░░░░░] 0%
@@ -58,6 +58,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 106 P01 | 35min | 2 tasks | 7 files |
 | Phase 106 P02 | 22min | 2 tasks | 4 files |
 | Phase 106 P03 | 11min | 2 tasks | 2 files |
+| Phase 106 P04 | 26min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -71,6 +72,7 @@ Decisions are logged in the PROJECT.md Key Decisions table.
 - [Phase 106]: Keep workflow rejection timing and structural failure precedence aligned with existing unsupported components.
 - [Phase 106]: Treat defined workflows fields as opaque presence signals shared by marketplace and plugin schemas.
 - [Phase 106]: Persist workflows only as compatibility metadata; keep discovery and materialization resource sets unchanged.
+- [Phase 106]: Render workflows as its own canonical tail reason, deduplicated across every notification surface.
 
 ### Pending Todos
 
@@ -90,6 +92,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-08-29T20:03:53.971Z
-Stopped at: Completed Wave 2 through 106-03-PLAN.md
-Resume file: .planning/phases/106-workflow-detection-and-partial-install/106-04-PLAN.md
+Last session: 2026-08-29T20:33:47.247Z
+Stopped at: Phase 106 execution complete; verification pending
+Resume file: .planning/phases/106-workflow-detection-and-partial-install/106-VERIFICATION.md
