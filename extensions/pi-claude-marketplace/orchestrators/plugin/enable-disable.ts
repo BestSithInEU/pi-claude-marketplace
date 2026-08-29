@@ -91,12 +91,13 @@ import {
   enableRowDependencies,
   resolveCrossScopePluginTarget,
   selectDeclaringConfigWriteTarget,
+  type CrossScopePluginResolution,
+  type DeclaringConfigWriteTarget,
+  type LedgerDegradationSignals,
   writeAdoptingConfigEntries,
 } from "./shared.ts";
 
 import type { InstallFailureCapture } from "./install.ts";
-import type { DeclaringConfigWriteTarget, LedgerDegradationSignals } from "./shared.ts";
-import type { CrossScopePluginResolution } from "./shared.ts";
 import type { ScopedLocations } from "../../persistence/locations.ts";
 import type { DisabledPluginRecord, ExtensionState } from "../../persistence/state-io.ts";
 import type { ExtensionAPI, ExtensionContext, SoftDepStatus } from "../../platform/pi-api.ts";

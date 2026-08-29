@@ -76,8 +76,7 @@ import { notify } from "../../shared/notify.ts";
 import { withLockedStateTransaction } from "../../transaction/with-state-guard.ts";
 
 import { AUTOUPDATE_CONTEXT, NOAUTOUPDATE_CONTEXT } from "./autoupdate.messaging.ts";
-import { classifyAutoupdateFlip } from "./shared.ts";
-import { crossScopeFlag } from "./shared.ts";
+import { classifyAutoupdateFlip, crossScopeFlag } from "./shared.ts";
 
 import type { MarketplaceConfigEntry, ScopeConfig } from "../../persistence/config-io.ts";
 import type { ExtensionAPI, ExtensionContext } from "../../platform/pi-api.ts";
