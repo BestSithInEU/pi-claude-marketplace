@@ -5582,6 +5582,117 @@ test("WDET-02: a conventional workflows directory requires partial install and n
       await rm(cwd, { recursive: true, force: true });
     }
   });
+
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "install-workflow-retry-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      const workflowBody = "steps:\n  - run: echo sentinel\n";
+      const seeded = await seedPathMarketplaceWithPlugin({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        marketplaceName: "mp",
+        pluginName: "helper",
+        pluginVersion: "1.0.0",
+        pluginJsonVersion: "1.0.0",
+        skills: [{ sourceName: "tool" }],
+        commands: [{ sourceName: "deploy" }],
+        workflows: [{ sourceName: workflowName, body: workflowBody }],
+      });
+
+      await mkdir(path.dirname(locations.commandsStagingDir), { recursive: true });
+      await writeFile(locations.commandsStagingDir, "not-a-dir");
+
+      const { ctx, pi, notifications } = makeCtx();
+      await installPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "helper",
+        partial: true,
+      });
+
+      assert.equal(notifications.length, 1);
+      assert.equal(notifications[0]?.severity, "error");
+      assert.match(notifications[0]?.message ?? "", /⊘ helper v1\.0\.0 \(failed\)/);
+      assert.doesNotMatch(notifications[0]?.message ?? "", /\/reload|Re-run with --partial/);
+      await assert.rejects(stat(path.join(locations.skillsTargetDir, "helper-tool")), {
+        code: "ENOENT",
+      });
+      await assert.rejects(stat(path.join(locations.promptsTargetDir, "helper:deploy.md")), {
+        code: "ENOENT",
+      });
+      const interrupted = await loadState(locations.extensionRoot);
+      assert.equal(interrupted.marketplaces.mp?.plugins.helper, undefined);
+      assert.equal(
+        (await filesBelow(locations.scopeRoot)).some(
+          (file) => path.basename(file) === workflowName,
+        ),
+        false,
+      );
+      assert.equal(
+        await readFile(path.join(seeded.pluginRoot, "workflows", workflowName), "utf8"),
+        workflowBody,
+      );
+
+      await rm(locations.commandsStagingDir);
+      await installPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "helper",
+        partial: true,
+      });
+
+      assert.deepEqual(notifications[1], {
+        message:
+          "● mp [project]\n" +
+          "  ◉ helper v1.0.0 (partially-installed) {workflows}\n\n" +
+          "/reload to pick up changes",
+      });
+      assert.ok(
+        (await readFile(path.join(locations.skillsTargetDir, "helper-tool", "SKILL.md"), "utf8"))
+          .length > 0,
+      );
+      assert.ok(
+        (await readFile(path.join(locations.promptsTargetDir, "helper:deploy.md"), "utf8")).length >
+          0,
+      );
+
+      const after = await loadState(locations.extensionRoot);
+      const record = after.marketplaces.mp?.plugins.helper;
+      assert.ok(record !== undefined);
+      assert.deepEqual(record.compatibility.unsupported, ["workflows"]);
+      assert.deepEqual(Object.keys(record.resources), [
+        "skills",
+        "prompts",
+        "agents",
+        "mcpServers",
+        "hooks",
+      ]);
+      assert.deepEqual(record.resources.skills, ["helper-tool"]);
+      assert.deepEqual(record.resources.prompts, ["helper:deploy"]);
+      assert.deepEqual(record.resources.agents, []);
+      assert.deepEqual(record.resources.mcpServers, []);
+      assert.deepEqual(record.resources.hooks, []);
+      assert.equal(
+        (await filesBelow(locations.scopeRoot)).some(
+          (file) => path.basename(file) === workflowName,
+        ),
+        false,
+      );
+      assert.equal(
+        await readFile(path.join(seeded.pluginRoot, "workflows", workflowName), "utf8"),
+        workflowBody,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });
 
 test("D-106-06: structural failure wins over a workflows soft signal under partial install", async () => {
