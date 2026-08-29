@@ -621,7 +621,7 @@ The manifest declares Claude features Pi doesn't support, but the plugin is othe
 A plugin operation has failed.
 
 ● official [user]
-  ⊖ helper v1.0.0 (partially-available) {workflows}
+  ⊖ helper (partially-available) {workflows}
     Re-run with --partial to install the supported components.
 ```
 

@@ -1325,7 +1325,6 @@ const FIXTURES: FixtureMap = {
               {
                 status: "partially-available",
                 name: "helper",
-                version: "1.0.0",
                 reasons: ["workflows"],
                 partialHint: true,
                 severity: "error",
