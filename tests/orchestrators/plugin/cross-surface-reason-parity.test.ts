@@ -105,8 +105,7 @@ test("SURF-01 / WR-01 structural both-defects plugin renders `unsupported source
 // list on `PluginShapeError`. `narrowResolverReasons` consumes that list first,
 // then folds notes with first-wins dedup. Both MUST agree for the same kind, so
 // a force-degradable component never gets different `{<reason>}` brace content
-// on different commands. The outer status is also byte-identical across these
-// surfaces under USTAT-01. Each case supplies the matching note as a secondary input.
+// on different commands. Each case supplies the matching note as a secondary input.
 const PER_KIND_PARITY_CASES = [
   // HOOK-04 / D-58-02: `lspServers` has a dedicated per-kind mapping to `lsp`.
   { kind: "lspServers", note: "contains lspServers", expected: "lsp" },
