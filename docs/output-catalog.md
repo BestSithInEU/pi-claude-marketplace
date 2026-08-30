@@ -60,7 +60,7 @@ This 0 / 2 / 4 / 6 ladder is the byte-exact contract `notify()` emits at the `ct
 
 ### Reasons rendering
 
-Reasons render inside a single `{}` block, comma-space separated. Each reason is 1-3 words lowercase, hyphenated where natural (`{up-to-date}`, `{rollback partial}`, `{not in manifest}`). Manifest field names render verbatim as the sole carve-out (`{lsp}`). HOOK-04 / D-58-02: `{unsupported hooks}` is a normal 2-word reason (no longer a manifest-field carve-out -- under v1.13 the `hooks` component kind is supported, and the reason is sourced through `shared/probe-classifiers.ts::narrowResolverNotes` against `parseHooksConfig` prefix tokens). The 44-member `extensions/pi-claude-marketplace/shared/notify.ts::REASONS` tuple defines the closed set. The typed `workflows` kind maps to the final append-only member, `{workflows}`.
+Reasons render inside a single `{}` block, comma-space separated. Each reason is 1-3 words lowercase, hyphenated where natural (`{up-to-date}`, `{rollback partial}`, `{not in manifest}`). Typed-kind carve-outs render `{lsp}` for `lspServers` and `{workflows}` for `workflows`. HOOK-04 / D-58-02: `{unsupported hooks}` is a normal 2-word reason (no longer a manifest-field carve-out -- under v1.13 the `hooks` component kind is supported, and the reason is sourced through `shared/probe-classifiers.ts::narrowResolverNotes` against `parseHooksConfig` prefix tokens). The 44-member `extensions/pi-claude-marketplace/shared/notify.ts::REASONS` tuple defines the closed set. The typed `workflows` kind maps to the final append-only member, `{workflows}`.
 
 Structural `unavailable` rows derive reasons from resolver notes through `narrowResolverNotes`. Partial rows derive typed unsupported kinds through `narrowUnsupportedKinds`. The typed `workflows` kind uses the second path.
 
@@ -1940,7 +1940,17 @@ Severity `info`; no reload-hint (read-only surface).
 
 ### Success -- unavailable single scope
 
-Triggered when `resolveStrict` returns `installable: false` for the plugin entry. USTAT-01 / D-64-01: the not-installed info row now de-collapses by resolver STATE, byte-consistent with the list surface. A STRUCTURALLY-malformed plugin (a `hooks/hooks.json` that is invalid JSON, or a schema failure such as a `type:"command"` handler missing its `command`; an unreadable / non-path source; or a broken `mcpServers` string reference -- a missing / malformed-JSON / wrapper-less / out-of-root referenced `.mcp.json`, which renders `{malformed mcp}`, MCPR-03 / D-02) resolves `unavailable` and renders the `⊘` glyph with `(unavailable)`. A partially-available plugin has typed unsupported kinds. These kinds include `lspServers`, workflows, other unsupported components, and supportable subsets of `hooks.json`. This plugin renders the `⊖` glyph with `(partially-available)` (D-71-03 / PHOOK-03). Once installed, it derives `partially-installed`. Each row has a closed-set REASON brace. The structural arm uses `narrowResolverNotes` for `{unsupported source}` or `{malformed mcp}`. The partially-available arm uses `narrowUnsupportedKinds` for `{unsupported hooks}`, `{lsp}`, `{unsupported component}`, or `{workflows}`. The example below is the STRUCTURAL malformed-`hooks.json` case, so it keeps `⊘ (unavailable)`. The renderer's `componentsResolved: false` switch arm fires for the not-installable arms, emitting the `components: not resolved` marker line in place of per-kind component lists -- the plugin is not installable so its component layout is moot. Severity `info` (neither `partially-available` nor `unavailable` is a failure on the info surface; only `failed` routes to error).
+Triggered when `resolveStrict` returns `state: "partially-available" | "unavailable"` for the plugin entry. USTAT-01 / D-64-01: the not-installed info row uses the resolver state. Its bytes match the list surface.
+
+A structurally malformed plugin resolves to `unavailable`. Structural errors include invalid or schema-invalid `hooks/hooks.json`, unreadable or non-path sources, and broken `mcpServers` references. A broken reference uses the `{malformed mcp}` reason (MCPR-03 / D-02). The row uses the `⊘` glyph and the `(unavailable)` status.
+
+A partially available plugin has typed unsupported kinds. These kinds include `lspServers`, workflows, other unsupported components, and supported subsets of `hooks.json`. The row uses the `⊖` glyph and the `(partially-available)` status (D-71-03 / PHOOK-03). After installation, the plugin state becomes `partially-installed`.
+
+Each row has one closed-set reason block. The structural arm uses `narrowResolverNotes` for `{unsupported source}` or `{malformed mcp}`. The partial arm uses `narrowUnsupportedKinds` for `{unsupported hooks}`, `{lsp}`, `{unsupported component}`, or `{workflows}`.
+
+The example shows malformed `hooks.json`, so the row remains `⊘ (unavailable)`. For non-local sources and component-read failures, the renderer sets `componentsResolved` to `false`. Then it writes `components: not resolved` instead of the component list. For a local path source, the renderer tries to enumerate components for both non-installable states. It sets `componentsResolved` to `true` when that read succeeds.
+
+Severity is `info` on this surface. Neither resolver state is a failed command. Only the `failed` status uses error severity.
 
 <!-- catalog-state: unavailable-single-scope -->
 
