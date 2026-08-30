@@ -14,7 +14,7 @@ affects: [plugin-install, plugin-discovery, resolver, notification-catalog]
 actuals:
   tokens: 11217
   tasks: 3
-  commits: 3
+  commits: 5
 
 tech-stack:
   added: []
@@ -110,7 +110,7 @@ coverage:
         status: pass
     human_judgment: false
 
-duration: 59min
+duration: 82min
 completed: 2026-08-29
 status: complete
 ---
@@ -121,9 +121,9 @@ status: complete
 
 ## Performance
 
-- **Duration:** 59 min
+- **Duration:** 82 min
 - **Started:** 2026-08-29T22:54:24Z
-- **Completed:** 2026-08-29T23:53:49Z
+- **Completed:** 2026-08-30T00:16:09Z
 - **Tasks:** 3
 - **Files modified:** 14
 
@@ -133,6 +133,7 @@ status: complete
 - Proved that malformed and command-bearing workflow bytes are not materialized or executed.
 - Preserved all inherited reason indexes and appended `workflows` as the final reason.
 - Corrected classifier-axis, partial-install, catalog, and changelog wording.
+- Corrected resolver-state and component-enumeration descriptions after the follow-up review.
 
 ## Task Commits
 
@@ -141,8 +142,10 @@ Each task was committed atomically:
 1. **Task 1: Prove opaque workflow handling** - `24745ae6` (test)
 2. **Task 2: Restore the append-only reason tail** - `6e9aeffc` (fix)
 3. **Task 3: Correct classifier and release wording** - `097a43a0` (docs)
+4. **Review follow-up: Correct resolver-state descriptions** - `8505dc7f` (docs)
+5. **Review follow-up: Clarify component enumeration** - `082b4205` (docs)
 
-Planning artifacts remain uncommitted for the orchestrator to finalize.
+The orchestrator committed the planning artifacts after the three planned tasks.
 
 ## Files Created/Modified
 
@@ -164,7 +167,8 @@ Planning artifacts remain uncommitted for the orchestrator to finalize.
 
 ## Deviations from Plan
 
-None - plan executed exactly as written.
+- The follow-up comments review found stale resolver-state and component-enumeration text.
+- The two documentation commits corrected those facts. They did not change runtime behavior.
 
 ## Issues Encountered
 
@@ -177,14 +181,14 @@ None - no external service configuration is required.
 
 ## Next Phase Readiness
 
-- The three review-remediation commits are ready for the existing PR branch.
+- The five review-remediation commits are ready for the existing PR branch.
 - No blockers, known stubs, skipped verification, or new threat surfaces remain.
 
 ## Self-Check: PASSED
 
 - The summary and all 14 modified files exist.
-- All three task commits exist on `features/workflows-detection`.
-- Planning artifacts remain unstaged and uncommitted.
+- All five remediation commits exist on `features/workflows-detection`.
+- The planning artifacts are tracked on the feature branch.
 
 ---
 
