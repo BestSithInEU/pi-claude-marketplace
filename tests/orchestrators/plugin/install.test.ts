@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -116,10 +126,46 @@ async function withHermeticHome<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+async function filesBelow(root: string): Promise<string[]> {
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+
+    throw err;
+  }
+
+  const files: string[] = [];
+  for (const entry of entries) {
+    const entryPath = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await filesBelow(entryPath)));
+    } else {
+      files.push(entryPath);
+    }
+  }
+
+  return files;
+}
+
 interface SeededPlugin {
   pluginRoot: string;
   marketplaceRoot: string;
   manifestPath: string;
+}
+
+async function writeWorkflowFixtures(
+  pluginRoot: string,
+  workflows: readonly { sourceName: string; body?: string }[],
+): Promise<void> {
+  for (const workflow of workflows) {
+    const workflowsDir = path.join(pluginRoot, "workflows");
+    await mkdir(workflowsDir, { recursive: true });
+    await writeFile(path.join(workflowsDir, workflow.sourceName), workflow.body ?? "steps: []\n");
+  }
 }
 
 /**
@@ -139,6 +185,7 @@ async function writePluginComponents(
     agents?: { sourceName: string; frontmatterName?: string; tools?: string; body?: string }[];
     mcpServers?: Record<string, unknown>;
     hooksJson?: object;
+    workflows?: { sourceName: string; body?: string }[];
   },
 ): Promise<void> {
   for (const skill of opts.skills ?? []) {
@@ -183,6 +230,8 @@ async function writePluginComponents(
     await mkdir(hooksDir, { recursive: true });
     await writeFile(path.join(hooksDir, "hooks.json"), JSON.stringify(opts.hooksJson));
   }
+
+  await writeWorkflowFixtures(pluginRoot, opts.workflows ?? []);
 }
 
 /**
@@ -389,6 +438,8 @@ async function seedPathMarketplaceWithPlugin(opts: {
    * orchestrators run their parsed-config-cache mutation path.
    */
   hooksJson?: object;
+  /** Workflow source fixtures. Production code must not read or materialize these files. */
+  workflows?: { sourceName: string; body?: string }[];
   /**
    * DFEN-08: additional entries seeded into the SAME marketplace manifest
    * beside `pluginName`, each with its own plugin tree carrying one skill.
@@ -5421,6 +5472,384 @@ test("SURF-05: installPlugin of a hooks-declaring plugin with rewakeMessage AND 
 // ───────────────────────────────────────────────────────────────────────────
 // FORCE-01/03/04/05 -- `--force` degrade gate selection
 // ───────────────────────────────────────────────────────────────────────────
+
+test("WDET-02: a conventional workflows directory requires partial install and never materializes", async () => {
+  const workflowName = "sentinel.workflow.yml";
+
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "install-workflow-reject-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      const seeded = await seedPathMarketplaceWithPlugin({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        marketplaceName: "mp",
+        pluginName: "helper",
+        pluginVersion: "1.0.0",
+        pluginJsonVersion: "1.0.0",
+        skills: [{ sourceName: "tool" }],
+        workflows: [{ sourceName: workflowName, body: "steps:\n  - run: echo sentinel\n" }],
+      });
+
+      const { ctx, pi, notifications } = makeCtx();
+      await installPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "helper",
+      });
+
+      assert.deepEqual(notifications, [
+        {
+          severity: "error",
+          // The install gate runs before version resolution, so the existing
+          // rejection grammar has no version slot.
+          message:
+            "A plugin operation has failed.\n\n" +
+            "● mp [project]\n" +
+            "  ⊖ helper (partially-available) {workflows}\n" +
+            "    Re-run with --partial to install the supported components.",
+        },
+      ]);
+      const after = await loadState(locations.extensionRoot);
+      assert.equal(after.marketplaces["mp"]?.plugins.helper, undefined);
+      await assert.rejects(stat(path.join(locations.skillsTargetDir, "helper-tool")), {
+        code: "ENOENT",
+      });
+      assert.equal(
+        (await filesBelow(locations.scopeRoot)).some(
+          (file) => path.basename(file) === workflowName,
+        ),
+        false,
+      );
+      assert.equal(
+        await readFile(path.join(seeded.pluginRoot, "workflows", workflowName), "utf8"),
+        "steps:\n  - run: echo sentinel\n",
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "install-workflow-partial-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      const seeded = await seedPathMarketplaceWithPlugin({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        marketplaceName: "mp",
+        pluginName: "helper",
+        pluginVersion: "1.0.0",
+        pluginJsonVersion: "1.0.0",
+        skills: [{ sourceName: "tool" }],
+        workflows: [{ sourceName: workflowName, body: "steps:\n  - run: echo sentinel\n" }],
+      });
+
+      const { ctx, pi, notifications } = makeCtx();
+      await installPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "helper",
+        partial: true,
+      });
+
+      assert.deepEqual(notifications, [
+        {
+          message:
+            "● mp [project]\n" +
+            "  ◉ helper v1.0.0 (partially-installed) {workflows}\n\n" +
+            "/reload to pick up changes",
+        },
+      ]);
+      assert.ok(
+        (await readFile(path.join(locations.skillsTargetDir, "helper-tool", "SKILL.md"), "utf8"))
+          .length > 0,
+      );
+
+      const after = await loadState(locations.extensionRoot);
+      const record = after.marketplaces["mp"]?.plugins.helper;
+      assert.ok(record !== undefined);
+      assert.deepEqual(record.compatibility.unsupported, ["workflows"]);
+      assert.deepEqual(Object.keys(record.resources), [
+        "skills",
+        "prompts",
+        "agents",
+        "mcpServers",
+        "hooks",
+      ]);
+      assert.deepEqual(record.resources.skills, ["helper-tool"]);
+      assert.equal(
+        (await filesBelow(locations.scopeRoot)).some(
+          (file) => path.basename(file) === workflowName,
+        ),
+        false,
+      );
+      assert.equal(
+        await readFile(path.join(seeded.pluginRoot, "workflows", workflowName), "utf8"),
+        "steps:\n  - run: echo sentinel\n",
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "install-workflow-retry-"));
+    try {
+      const locations = locationsFor("project", cwd);
+      const workflowBody = "steps:\n  - run: echo sentinel\n";
+      const seeded = await seedPathMarketplaceWithPlugin({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        marketplaceName: "mp",
+        pluginName: "helper",
+        pluginVersion: "1.0.0",
+        pluginJsonVersion: "1.0.0",
+        skills: [{ sourceName: "tool" }],
+        commands: [{ sourceName: "deploy" }],
+        workflows: [{ sourceName: workflowName, body: workflowBody }],
+      });
+
+      await mkdir(path.dirname(locations.commandsStagingDir), { recursive: true });
+      await writeFile(locations.commandsStagingDir, "not-a-dir");
+
+      const { ctx, pi, notifications } = makeCtx();
+      await installPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "helper",
+        partial: true,
+      });
+
+      assert.equal(notifications.length, 1);
+      assert.equal(notifications[0]?.severity, "error");
+      assert.match(notifications[0]?.message ?? "", /⊘ helper v1\.0\.0 \(failed\)/);
+      assert.doesNotMatch(notifications[0]?.message ?? "", /\/reload|Re-run with --partial/);
+      await assert.rejects(stat(path.join(locations.skillsTargetDir, "helper-tool")), {
+        code: "ENOENT",
+      });
+      await assert.rejects(stat(path.join(locations.promptsTargetDir, "helper:deploy.md")), {
+        code: "ENOENT",
+      });
+      const interrupted = await loadState(locations.extensionRoot);
+      assert.equal(interrupted.marketplaces.mp?.plugins.helper, undefined);
+      assert.equal(
+        (await filesBelow(locations.scopeRoot)).some(
+          (file) => path.basename(file) === workflowName,
+        ),
+        false,
+      );
+      assert.equal(
+        await readFile(path.join(seeded.pluginRoot, "workflows", workflowName), "utf8"),
+        workflowBody,
+      );
+
+      await rm(locations.commandsStagingDir);
+      await installPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "helper",
+        partial: true,
+      });
+
+      assert.deepEqual(notifications[1], {
+        message:
+          "● mp [project]\n" +
+          "  ◉ helper v1.0.0 (partially-installed) {workflows}\n\n" +
+          "/reload to pick up changes",
+      });
+      assert.ok(
+        (await readFile(path.join(locations.skillsTargetDir, "helper-tool", "SKILL.md"), "utf8"))
+          .length > 0,
+      );
+      assert.ok(
+        (await readFile(path.join(locations.promptsTargetDir, "helper:deploy.md"), "utf8")).length >
+          0,
+      );
+
+      const after = await loadState(locations.extensionRoot);
+      const record = after.marketplaces.mp?.plugins.helper;
+      assert.ok(record !== undefined);
+      assert.deepEqual(record.compatibility.unsupported, ["workflows"]);
+      assert.deepEqual(Object.keys(record.resources), [
+        "skills",
+        "prompts",
+        "agents",
+        "mcpServers",
+        "hooks",
+      ]);
+      assert.deepEqual(record.resources.skills, ["helper-tool"]);
+      assert.deepEqual(record.resources.prompts, ["helper:deploy"]);
+      assert.deepEqual(record.resources.agents, []);
+      assert.deepEqual(record.resources.mcpServers, []);
+      assert.deepEqual(record.resources.hooks, []);
+      assert.equal(
+        (await filesBelow(locations.scopeRoot)).some(
+          (file) => path.basename(file) === workflowName,
+        ),
+        false,
+      );
+      assert.equal(
+        await readFile(path.join(seeded.pluginRoot, "workflows", workflowName), "utf8"),
+        workflowBody,
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("WDET-06: opaque workflow bytes cannot block installation or execute commands", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "install-workflow-opaque-"));
+    const malformedName = "malformed.workflow.yml";
+    const commandName = "command.workflow.yml";
+    const malformedBody = "{ this is not valid workflow data";
+    const executionSentinel = path.join(cwd, "workflow-command-executed");
+    const commandBody =
+      "steps:\n" +
+      `  - run: ${JSON.stringify(
+        `${process.execPath} -e ${JSON.stringify(
+          `require("node:fs").writeFileSync(${JSON.stringify(executionSentinel)}, "executed")`,
+        )}`,
+      )}\n`;
+
+    try {
+      const locations = locationsFor("project", cwd);
+      const seeded = await seedPathMarketplaceWithPlugin({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        marketplaceName: "mp",
+        pluginName: "helper",
+        pluginVersion: "1.0.0",
+        pluginJsonVersion: "1.0.0",
+        skills: [{ sourceName: "tool" }],
+        workflows: [
+          { sourceName: malformedName, body: malformedBody },
+          { sourceName: commandName, body: commandBody },
+        ],
+      });
+
+      const { ctx, pi, notifications } = makeCtx();
+      await installPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "helper",
+        partial: true,
+      });
+
+      assert.equal(notifications.length, 1);
+      assert.ok(
+        (await readFile(path.join(locations.skillsTargetDir, "helper-tool", "SKILL.md"), "utf8"))
+          .length > 0,
+      );
+
+      const after = await loadState(locations.extensionRoot);
+      const record = after.marketplaces.mp?.plugins.helper;
+      assert.ok(record !== undefined);
+      assert.deepEqual(record.compatibility.unsupported, ["workflows"]);
+      assert.deepEqual(Object.keys(record.resources), [
+        "skills",
+        "prompts",
+        "agents",
+        "mcpServers",
+        "hooks",
+      ]);
+      assert.equal(
+        (await filesBelow(locations.scopeRoot)).some((file) =>
+          [malformedName, commandName].includes(path.basename(file)),
+        ),
+        false,
+      );
+      assert.equal(
+        await readFile(path.join(seeded.pluginRoot, "workflows", malformedName), "utf8"),
+        malformedBody,
+      );
+      assert.equal(
+        await readFile(path.join(seeded.pluginRoot, "workflows", commandName), "utf8"),
+        commandBody,
+      );
+      await assert.rejects(stat(executionSentinel), { code: "ENOENT" });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("D-106-06: structural failure wins over a workflows soft signal under partial install", async () => {
+  await withHermeticHome(async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "install-workflow-structural-"));
+    const workflowName = "structural-sentinel.workflow.yml";
+    try {
+      const locations = locationsFor("project", cwd);
+      const seeded = await seedPathMarketplaceWithPlugin({
+        cwd,
+        marketplaceRoot: path.join(cwd, "mp-src"),
+        marketplaceName: "mp",
+        pluginName: "helper",
+        skills: [{ sourceName: "tool" }],
+        workflows: [{ sourceName: workflowName }],
+      });
+      await writeFile(path.join(seeded.pluginRoot, ".mcp.json"), "{ not json");
+
+      const { ctx, pi, notifications } = makeCtx();
+      const outcome = await installPlugin({
+        ctx,
+        pi,
+        scope: "project",
+        cwd,
+        marketplace: "mp",
+        plugin: "helper",
+        partial: true,
+      });
+
+      assert.deepEqual(notifications, [
+        {
+          severity: "error",
+          message:
+            "A plugin operation has failed.\n\n" +
+            "● mp [project]\n" +
+            "  ⊘ helper (unavailable) {unsupported source}",
+        },
+      ]);
+      assert.equal(outcome.status, "failed");
+      assert.equal(Object.hasOwn(outcome, "pluginRoot"), false);
+
+      const after = await loadState(locations.extensionRoot);
+      assert.equal(after.marketplaces["mp"]?.plugins.helper, undefined);
+      await assert.rejects(stat(path.join(locations.skillsTargetDir, "helper-tool")), {
+        code: "ENOENT",
+      });
+      assert.equal(
+        (await filesBelow(locations.scopeRoot)).some(
+          (file) => path.basename(file) === workflowName,
+        ),
+        false,
+      );
+      assert.equal(
+        await readFile(path.join(seeded.pluginRoot, "workflows", workflowName), "utf8"),
+        "steps: []\n",
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
 
 test("FORCE-01: force on an unsupported plugin installs the supported components and skips the unsupported ones", async () => {
   await withHermeticHome(async () => {

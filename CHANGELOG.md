@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.18.1] - 2026-08-29
+
+- Structurally valid plugins that declare `workflows` or contain a literal `workflows/` directory now report `(partially-available) {workflows}`.
+- A normal install rejects these plugins. `--partial` installs only supported components.
+- Workflow contents remain opaque. The extension does not inspect them, materialize them into Pi targets, register them, or run them.
+
 ## [0.18.0] - 2026-08-29
 
 - A plugin author can now ship a command in a subdirectory of `commands/` and have it register. `commands/build/web.md` becomes `/acme:build:web`, one colon per path segment, to any depth, the same as Claude Code. Such a file was silently dropped before. Thanks to @rakesh-vs (#141).
