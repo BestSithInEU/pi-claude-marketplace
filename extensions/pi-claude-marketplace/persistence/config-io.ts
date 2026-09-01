@@ -29,7 +29,7 @@
 
 import { readFile } from "node:fs/promises";
 
-import Type from "typebox";
+import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 
 import { atomicWriteJson } from "../shared/atomic-json.ts";

@@ -12,7 +12,7 @@
 // consumers (loadAgentsIndex / saveAgentsIndex / future bridge code)
 // pay zero per-call compilation cost.
 
-import Type from "typebox";
+import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 
 /**

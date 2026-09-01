@@ -37,7 +37,7 @@ import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import Type from "typebox";
+import { Type } from "typebox";
 
 import { PluginShapeError } from "../shared/errors.ts";
 import { PathContainmentError, assertPathInside } from "../shared/path-safety.ts";

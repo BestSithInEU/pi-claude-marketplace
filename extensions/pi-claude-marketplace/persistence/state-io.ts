@@ -26,7 +26,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import Type from "typebox";
+import { Type } from "typebox";
 import { Compile } from "typebox/compile";
 
 import { githubSource, parsePluginSource, pathSource } from "../domain/source.ts";
