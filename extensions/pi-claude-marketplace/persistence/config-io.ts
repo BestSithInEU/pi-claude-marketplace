@@ -29,8 +29,8 @@
 
 import { readFile } from "node:fs/promises";
 
-import { Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { Compile } from "typebox/schema";
+import * as Type from "typebox/type";
 
 import { atomicWriteJson } from "../shared/atomic-json.ts";
 import { errorMessage } from "../shared/errors.ts";
@@ -94,7 +94,7 @@ export const CONFIG_VALIDATOR = Compile(CONFIG_SCHEMA);
 
 /** Format the first validator error into a single-line message. */
 function firstConfigValidationErrorDetail(value: unknown): string {
-  const errors = CONFIG_VALIDATOR.Errors(value);
+  const [, errors] = CONFIG_VALIDATOR.Errors(value);
   const first = errors[0];
   if (!first) {
     return "(no detail available)";

@@ -8,8 +8,8 @@
 
 import { readFile } from "node:fs/promises";
 
-import { Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { Compile } from "typebox/schema";
+import * as Type from "typebox/type";
 
 import { InvalidMarketplaceManifestError } from "../shared/errors.ts";
 
@@ -68,7 +68,7 @@ async function loadMarketplaceManifestUncached(manifestPath: string): Promise<Ma
   }
 
   if (!MARKETPLACE_VALIDATOR.Check(parsed)) {
-    const firstErr = MARKETPLACE_VALIDATOR.Errors(parsed)[0];
+    const firstErr = MARKETPLACE_VALIDATOR.Errors(parsed)[1][0];
     const detail = firstErr
       ? `${firstErr.instancePath || "<root>"}: ${firstErr.message}`
       : "(no detail)";

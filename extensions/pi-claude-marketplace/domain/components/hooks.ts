@@ -42,8 +42,8 @@
 // wrapper form; in-tree configs that happen to be bare-shaped continue to
 // validate via the unchanged arm.
 
-import { Type, type TUnsafe } from "typebox";
-import { Compile } from "typebox/compile";
+import { Compile } from "typebox/schema";
+import * as Type from "typebox/type";
 
 import { hookDebugLog } from "../../shared/debug-log.ts";
 import { errorMessage } from "../../shared/errors.ts";
@@ -225,7 +225,7 @@ const HOOK_HANDLER_SCHEMA = {
     required: ["type", "command"],
     properties: { command: { type: "string" } },
   },
-} as unknown as TUnsafe<HookHandlerEntry>;
+} as unknown as Type.TUnsafe<HookHandlerEntry>;
 
 // A single hook group inside an event arm. `hooks` is the handler list.
 // `matcher` is optional (MATCH-01: empty string matches all; absence
@@ -278,7 +278,7 @@ export const HOOKS_VALIDATOR = Compile(HOOKS_CONFIG_SCHEMA);
 
 /** Format the first validator error into a single-line message. */
 function firstHookValidationDetail(value: unknown): string {
-  const errors = HOOKS_VALIDATOR.Errors(value);
+  const [, errors] = HOOKS_VALIDATOR.Errors(value);
   const first = errors[0];
   if (!first) {
     return "(no detail available)";

@@ -33,7 +33,7 @@
 // (the plugin IS installed; the upgrade status is for the slash-command
 // surface per MSG-PL-4).
 
-import { Type } from "typebox";
+import * as Type from "typebox/type";
 
 import { sourceLogical } from "../../domain/source.ts";
 import { loadVisibleMarketplaces } from "../../orchestrators/marketplace/shared.ts";

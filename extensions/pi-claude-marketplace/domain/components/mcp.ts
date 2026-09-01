@@ -7,8 +7,8 @@
 //
 // D-07: JIT compilation at module load. The import path is `typebox/compile`.
 
-import { Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { Compile } from "typebox/schema";
+import * as Type from "typebox/type";
 
 export const MCP_SERVERS_SCHEMA = Type.Record(Type.String(), Type.Unknown());
 

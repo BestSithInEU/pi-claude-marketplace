@@ -12,8 +12,8 @@
 // consumers (loadAgentsIndex / saveAgentsIndex / future bridge code)
 // pay zero per-call compilation cost.
 
-import { Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { Compile } from "typebox/schema";
+import * as Type from "typebox/type";
 
 /**
  * AG-2: per-row schema for agents-index.json.

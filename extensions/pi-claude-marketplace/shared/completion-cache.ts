@@ -50,8 +50,8 @@
 
 import { readFile, unlink } from "node:fs/promises";
 
-import { Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { Compile } from "typebox/schema";
+import * as Type from "typebox/type";
 
 import { atomicWriteJson } from "./atomic-json.ts";
 import { errorMessage } from "./errors.ts";

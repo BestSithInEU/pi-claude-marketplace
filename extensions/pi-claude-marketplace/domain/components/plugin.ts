@@ -11,8 +11,8 @@
 // TypeBox `Type.Optional` produces `T | undefined` in Static<>, not `T?`.
 // Use `=== undefined` checks downstream, not `in`.
 
-import { Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { Compile } from "typebox/schema";
+import * as Type from "typebox/type";
 
 import { MCP_SERVERS_SCHEMA } from "./mcp.ts";
 

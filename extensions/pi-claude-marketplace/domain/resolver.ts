@@ -37,7 +37,7 @@ import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { Type } from "typebox";
+import * as Type from "typebox/type";
 
 import { PluginShapeError } from "../shared/errors.ts";
 import { PathContainmentError, assertPathInside } from "../shared/path-safety.ts";
@@ -621,7 +621,7 @@ async function readManifest(
     const parsed: unknown = JSON.parse(raw);
 
     if (!PLUGIN_MANIFEST_VALIDATOR.Check(parsed)) {
-      const firstErr = PLUGIN_MANIFEST_VALIDATOR.Errors(parsed)[0];
+      const firstErr = PLUGIN_MANIFEST_VALIDATOR.Errors(parsed)[1][0];
       const detail = firstErr
         ? `${firstErr.instancePath || "(root)"}: ${firstErr.message}`
         : "(no detail)";
@@ -1357,7 +1357,7 @@ function applyMcpValue(partial: PartialResolution, mcp: unknown, detail = true):
   }
 
   if (detail) {
-    const firstErr = MCP_SERVERS_VALIDATOR.Errors(mcp)[0];
+    const firstErr = MCP_SERVERS_VALIDATOR.Errors(mcp)[1][0];
     partial.notes.push(`malformed mcpServers: ${firstErr ? firstErr.message : "shape mismatch"}`);
   } else {
     partial.notes.push(`malformed mcpServers`);

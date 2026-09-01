@@ -54,7 +54,7 @@ function agentsIndexPathFor(loc: ScopedLocations): string {
 
 /** First validator error formatted as a single-line message. */
 function firstEntryErrorDetail(value: unknown): string {
-  const errors = AGENTS_INDEX_ENTRY_VALIDATOR.Errors(value);
+  const [, errors] = AGENTS_INDEX_ENTRY_VALIDATOR.Errors(value);
   const first = errors[0];
   if (!first) {
     return "(no detail available)";

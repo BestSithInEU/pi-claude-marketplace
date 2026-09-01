@@ -26,8 +26,8 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { Compile } from "typebox/schema";
+import * as Type from "typebox/type";
 
 import { githubSource, parsePluginSource, pathSource } from "../domain/source.ts";
 import { atomicWriteJson } from "../shared/atomic-json.ts";
@@ -314,7 +314,7 @@ function stateJsonPathFor(extensionRoot: string): string {
 
 /** Format the first validator error into a single-line message. */
 function firstValidationErrorDetail(value: unknown): string {
-  const errors = STATE_VALIDATOR.Errors(value);
+  const [, errors] = STATE_VALIDATOR.Errors(value);
   const first = errors[0];
   if (!first) {
     return "(no detail available)";
