@@ -42,7 +42,7 @@
 // wrapper form; in-tree configs that happen to be bare-shaped continue to
 // validate via the unchanged arm.
 
-import Type, { type TUnsafe } from "typebox";
+import { Type, type TUnsafe } from "typebox";
 import { Compile } from "typebox/compile";
 
 import { hookDebugLog } from "../../shared/debug-log.ts";
