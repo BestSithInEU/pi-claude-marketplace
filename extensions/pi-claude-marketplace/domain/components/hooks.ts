@@ -42,7 +42,7 @@
 // wrapper form; in-tree configs that happen to be bare-shaped continue to
 // validate via the unchanged arm.
 
-import Type from "typebox";
+import Type, { Unsafe } from "typebox";
 import { Compile } from "typebox/compile";
 
 import { hookDebugLog } from "../../shared/debug-log.ts";
@@ -143,7 +143,7 @@ function isPluginWrapper(v: unknown): v is { hooks: object } {
 // only) pass the schema and are rejected one layer up by TOOL-02(d) in the
 // resolver supportability gate.
 //
-// The conditional is expressed as raw JSON Schema 2020-12 via `Type.Unsafe`
+// The conditional is expressed as raw JSON Schema 2020-12 via `Unsafe`
 // because TypeBox 1.x's first-class combinators (`Type.Object` /
 // `Type.Union`) don't compose into a discriminator-with-required-field
 // shape cleanly. The runtime `Compile` handles `if/then/else` natively
@@ -182,7 +182,7 @@ export interface HookHandlerEntry {
   [k: string]: unknown;
 }
 
-const HOOK_HANDLER_SCHEMA = Type.Unsafe<HookHandlerEntry>({
+const HOOK_HANDLER_SCHEMA = Unsafe<HookHandlerEntry>({
   type: "object",
   required: ["type"],
   properties: {
